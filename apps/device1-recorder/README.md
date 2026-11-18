@@ -18,6 +18,9 @@ To see all discovered stream entries together in a Python desktop window:
 .\apps\device1-recorder\ui.ps1
 ```
 
+Enter the participant code and the user's full name in the **Record Session**
+fields near the top of the window. Both are required for an Aura recording;
+Device 2 uses the saved name in its selectable session list and user panel.
 Use **Refresh streams**, then **Inspect all** to retrieve connected inlet
 labels for every entry. Select the intended stream row before recording. If
 two rows have the same stream UID, they are duplicate resolver entries for
@@ -69,7 +72,8 @@ queued to Aura; Device 2 polls and consumes those chunks in source order.
 complete durable recording. The graph sample path is currently a prototype and
 should be load-tested before relying on it for long studies.
 
-The PowerShell launcher asks for a participant code when one is not supplied:
+The PowerShell launcher asks for the participant code and user's full name when
+they are not supplied:
 
 ```powershell
 # Manual start and stop (stop this recording with Ctrl+C in this terminal)

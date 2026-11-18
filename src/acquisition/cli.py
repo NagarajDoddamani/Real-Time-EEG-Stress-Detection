@@ -84,6 +84,8 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     participant_name = (getattr(args, "participant_name", None) or "").strip()
     if len(participant_id) > 100 or len(participant_name) > 160:
         raise ValueError("participant ID must be <=100 characters and display name <=160 characters")
+    if getattr(args, "neo4j", False) and (not participant_id or not participant_name):
+        raise ValueError("Neo4j recording requires both --participant-id and --participant-name so Device 2 can identify the user")
     participant_properties = {}
     if participant_id:
         participant_properties["participant_id"] = participant_id

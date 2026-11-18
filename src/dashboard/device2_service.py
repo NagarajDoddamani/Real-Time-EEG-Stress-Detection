@@ -77,9 +77,18 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
     RollingWindowBuffer, TrainedModel, map_eeg_channels, Reader = _components()
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     fs = float(config["sampling_frequency_hz"])
-    if not config.get("sampling_frequency_verified"):
-        raise ValueError("configured sampling frequency is not verified; live inference blocked")
-    model = TrainedModel(MODEL_PATH, MODEL_METADATA_PATH, CONFIG_PATH)
+    frequency_verified = bool(config.get("sampling_frequency_verified"))
+    model = None
+    inference_block_reason = None
+    if frequency_verified and MODEL_PATH.is_file() and MODEL_METADATA_PATH.is_file():
+        try:
+            model = TrainedModel(MODEL_PATH, MODEL_METADATA_PATH, CONFIG_PATH)
+        except Exception as exc:
+            inference_block_reason = f"Saved model could not be loaded: {exc}"
+    elif not frequency_verified:
+        inference_block_reason = "Configured model sampling frequency is not verified."
+    else:
+        inference_block_reason = "Trained model artifact or metadata is missing."
     reader = Reader()
     stop_event = threading.Event()
 
@@ -107,15 +116,26 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
         labels = list(props.get("channel_labels") or [])
         if not labels or int(props.get("channel_count", len(labels))) != len(labels):
             raise ValueError("session channel metadata is incomplete; cannot safely map EEG channels")
-        mapping = map_eeg_channels(labels, model.channels)
-        selected_indices = [mapping[name] for name in model.channels]
         nominal_rate = float(props.get("nominal_sampling_rate_hz") or 0.0)
-        if nominal_rate <= 0 or not math.isclose(nominal_rate, fs, rel_tol=0.02):
-            raise ValueError(f"session nominal rate {nominal_rate:g} Hz is incompatible with model rate {fs:g} Hz")
-        window_samples = int(model.metadata["window_samples"])
-        step_samples = int(model.metadata["window_step_samples"])
-        window_buffer = RollingWindowBuffer(len(model.channels), window_samples, step_samples,
-                                            expected_rate_hz=fs)
+        selected_indices = list(range(len(labels)))
+        window_buffer = None
+        window_samples = 0
+        step_samples = 0
+        if model is not None:
+            try:
+                mapping = map_eeg_channels(labels, model.channels)
+                if nominal_rate <= 0 or not math.isclose(nominal_rate, fs, rel_tol=0.02):
+                    raise ValueError(f"session nominal rate {nominal_rate:g} Hz is incompatible with model rate {fs:g} Hz")
+                selected_indices = [mapping[name] for name in model.channels]
+                window_samples = int(model.metadata["window_samples"])
+                step_samples = int(model.metadata["window_step_samples"])
+                window_buffer = RollingWindowBuffer(len(model.channels), window_samples, step_samples,
+                                                    expected_rate_hz=fs)
+            except (ValueError, KeyError, TypeError) as exc:
+                inference_block_reason = str(exc)
+                model = None
+        display_labels = labels if labels and any(label.strip() for label in labels) else [
+            f"Ch {index + 1:02d}" for index in range(len(labels))]
         _emit({"type": "monitor_started", "session": {
             "session_id": session_id,
             "participant_id": props.get("participant_id"),
@@ -124,16 +144,22 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
             "device": props.get("device", "unknown"),
             "stream_name": props.get("stream_name", "unknown"),
             "channel_count": len(labels),
-            "channel_labels_used": model.channels,
+            "channel_labels": display_labels,
+            "channel_labels_used": model.channels if model is not None else [],
             "nominal_sampling_rate_hz": nominal_rate,
-        }, "model": {"algorithm": model.metadata.get("model_algorithm"),
+        }, "inference_enabled": model is not None,
+            "inference_block_reason": inference_block_reason,
+            "model": ({"algorithm": model.metadata.get("model_algorithm"),
                     "window_samples": window_samples, "window_step_samples": step_samples,
                     "window_duration_seconds": window_samples / fs,
                     "validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy"),
                     "validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro"),
-                    "external_validation": bool(model.metadata.get("external_validation", False))},
+                    "external_validation": bool(model.metadata.get("external_validation", False))}
+                    if model is not None else None),
             "poll_interval_seconds": poll_interval,
-            "message": "Reading stored EEG chunks from the beginning of this session."})
+            "message": ("Reading stored EEG chunks from the beginning of this session."
+                        if model is not None else
+                        "Reading and graphing stored raw channels; model predictions are blocked until channel/rate metadata is valid.")})
 
         while not stop_event.is_set():
             cycle_started = time.monotonic()
@@ -143,14 +169,18 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
                     raise ValueError(f"chunk sequence gap: expected {chunk_cursor}, got {chunk['chunk_index']}")
                 if chunk["channel_labels"] != labels:
                     raise ValueError(f"channel labels/order changed at chunk {chunk_cursor}")
-                if not math.isclose(chunk["sampling_rate_hz"], fs, rel_tol=0.02):
+                chunk_rate = float(chunk["sampling_rate_hz"])
+                if chunk_rate <= 0:
+                    raise ValueError(f"chunk {chunk_cursor} has invalid sampling rate {chunk_rate:g} Hz")
+                if model is not None and not math.isclose(chunk_rate, fs, rel_tol=0.02):
                     raise ValueError(f"chunk {chunk_cursor} rate {chunk['sampling_rate_hz']:g} Hz differs from model rate")
                 # One complete second is the normal live unit. A shorter final
                 # chunk is accepted only after Device 1 has marked the session ended.
                 current_props = reader.get_session_properties(session_id) or props
                 n = chunk["sample_count"]
-                if n != int(round(fs)) and not (current_props.get("ended_at_utc") and 0 < n < int(round(fs))):
-                    raise ValueError(f"chunk {chunk_cursor} contains {n} samples; expected {int(round(fs))} per second")
+                expected_chunk_samples = int(round(chunk_rate))
+                if n != expected_chunk_samples and not (current_props.get("ended_at_utc") and 0 < n < expected_chunk_samples):
+                    raise ValueError(f"chunk {chunk_cursor} contains {n} samples; expected {expected_chunk_samples} per second")
                 raw = np.asarray(chunk["samples"], dtype=np.float64)
                 stamps = np.asarray(chunk["timestamps"], dtype=np.float64)
                 if raw.shape != (n, len(labels)) or not np.isfinite(raw).all() or not np.isfinite(stamps).all():
@@ -161,17 +191,19 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
                         raise ValueError(f"chunk {chunk_cursor} has non-increasing LSL timestamps")
                     median_interval = float(np.median(intervals))
                     observed_rate = 1.0 / median_interval
-                    if np.any(intervals > 1.5 * median_interval) or not math.isclose(observed_rate, fs, rel_tol=0.02):
-                        raise ValueError(f"chunk {chunk_cursor} timestamps are irregular or incompatible with {fs:g} Hz")
+                    if np.any(intervals > 1.5 * median_interval):
+                        raise ValueError(f"chunk {chunk_cursor} timestamps contain an irregular interval or gap")
+                    if model is not None and not math.isclose(observed_rate, fs, rel_tol=0.02):
+                        raise ValueError(f"chunk {chunk_cursor} timestamps are incompatible with model rate {fs:g} Hz")
                 if previous_timestamp is not None:
                     boundary = float(stamps[0]) - previous_timestamp
-                    if boundary <= 0 or boundary > 1.5 / fs:
+                    if boundary <= 0 or (model is not None and boundary > 1.5 / fs):
                         raise ValueError(f"timestamp gap at boundary before chunk {chunk_cursor}")
                 if int(chunk["first_sample_index"]) != sample_total:
                     raise ValueError(f"sample-index gap at chunk {chunk_cursor}: expected {sample_total}, got {chunk['first_sample_index']}")
 
                 eeg = raw[:, selected_indices]
-                windows = window_buffer.push(eeg, stamps)
+                windows = window_buffer.push(eeg, stamps) if window_buffer is not None else []
                 sample_offset = sample_total
                 sample_total += n
                 previous_timestamp = float(stamps[-1])
@@ -179,6 +211,7 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
                 _emit({"type": "sample_chunk", "chunk_index": chunk["chunk_index"],
                        "first_sample_index": sample_offset, "sample_count": n,
                        "timestamps": stamps.tolist(), "samples": eeg.tolist(),
+                       "channel_labels": display_labels if model is None else model.channels,
                        "samples_processed": sample_total,
                        "elapsed_seconds": sample_total / fs,
                        "observed_rate_hz": observed_rate if n > 1 else None})
@@ -222,6 +255,8 @@ def monitor_session(session_id: str, poll_interval: float = 1.0) -> None:
            "stress_window_count": stress_count,
            "baseline_window_count": baseline_count,
            "average_stress_score": float(np.mean(probabilities)) if probabilities else None,
+           "inference_enabled": model is not None,
+           "inference_block_reason": inference_block_reason,
            "majority_window_condition": ("stress" if stress_count > baseline_count else
                                          "baseline" if baseline_count > stress_count else "tie_or_no_windows"),
            "interpretation": "Experimental-condition estimates; not a clinical diagnosis."})

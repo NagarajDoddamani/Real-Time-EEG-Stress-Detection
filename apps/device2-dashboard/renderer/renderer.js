@@ -98,7 +98,8 @@ function renderSessions() {
     identity.textContent = session.participant_id ? `ID ${session.participant_id}` : 'Add participant code on Device 1';
     const meta = document.createElement('span');
     meta.className = 'session-meta';
-    meta.textContent = `${Number(session.raw_sample_count).toLocaleString()} samples  |  ${session.observed_sampling_rate_hz ?? session.nominal_sampling_rate_hz ?? '?'} Hz`;
+    const source = session.device || session.stream_name || 'Source not recorded';
+    meta.textContent = `${Number(session.raw_sample_count).toLocaleString()} samples  |  ${session.observed_sampling_rate_hz ?? session.nominal_sampling_rate_hz ?? '?'} Hz  |  ${source}`;
     const state = document.createElement('span');
     state.className = `session-state ${session.ended_at_utc ? 'ended' : 'active'}`;
     state.textContent = session.ended_at_utc ? 'STORED SESSION' : 'RECORDING';
@@ -115,7 +116,11 @@ async function refreshSessions() {
   try {
     const response = await window.eegApp.listSessions(100);
     sessions = response.sessions || [];
-    document.getElementById('dbStatus').textContent = 'Aura connected';
+    const liveCount = sessions.filter(item => /mitsar/i.test(String(item.device || '')) &&
+      !/replay|simulat/i.test(String(item.device || ''))).length;
+    document.getElementById('dbStatus').textContent = sessions.length
+      ? `Aura connected · ${sessions.length} sessions · ${liveCount} Mitsar source`
+      : 'Aura connected · no stored EEG chunks';
     setDot('dbDot', 'dot online');
     setDot('sideDot', monitorActive ? 'side-live' : 'side-ready');
     renderSessions();
@@ -192,8 +197,14 @@ function handleMonitorEvent(event) {
     setProfile({ ...selected, ...event.session });
     activeModelAlgorithm = event.model?.algorithm || 'saved model';
     activeModelMetadata = event.model || {};
-    channelLabels = event.session.channel_labels_used || [];
-    setStatus(`Monitoring ${event.session.participant_id || 'participant'}; reading stored chunks in order at about one chunk per second.`, 'success');
+    channelLabels = event.session.channel_labels_used?.length
+      ? event.session.channel_labels_used
+      : (event.session.channel_labels || []);
+    if (event.inference_enabled) {
+      setStatus(`Monitoring ${event.session.participant_id || 'participant'}; reading stored chunks in order and running model windows.`, 'success');
+    } else {
+      setStatus(`Live database data is being retrieved and graphed. Predictions are blocked: ${event.inference_block_reason || 'model input could not be validated.'}`, 'error');
+    }
     return;
   }
   if (event.type === 'sample_chunk') {
@@ -230,10 +241,14 @@ function handleMonitorEvent(event) {
       model_algorithm: activeModelAlgorithm
     };
     ui.pdf.disabled = predictions.length === 0;
-    const msg = event.finish_reason === 'device1_session_ended'
-      ? 'Device 1 recording ended. Final report is ready.'
-      : 'Processing stopped. Summary is ready; Device 1 recording was not stopped.';
-    setStatus(msg, 'success');
+    if (!event.inference_enabled) {
+      setStatus(`Raw database retrieval finished (${Number(event.sample_count).toLocaleString()} samples). Predictions were not produced: ${event.inference_block_reason || 'model input could not be validated.'}`, 'error');
+    } else {
+      const msg = event.finish_reason === 'device1_session_ended'
+        ? 'Device 1 recording ended. Final report is ready.'
+        : 'Processing stopped. Summary is ready; Device 1 recording was not stopped.';
+      setStatus(msg, 'success');
+    }
   }
 }
 
@@ -307,7 +322,7 @@ function drawEeg() {
     const center = top + rowHeight / 2;
     ctx.strokeStyle = '#1e2b40'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(labelWidth, center); ctx.lineTo(width, center); ctx.stroke();
-    ctx.fillStyle = palette[i % palette.length]; ctx.fillText(channelLabels[i], 4, center + 3);
+    ctx.fillStyle = palette[i % palette.length]; ctx.fillText(channelLabels[i] || `Ch ${String(i + 1).padStart(2, '0')}`, 4, center + 3);
     if (!waveformRows.length) continue;
     const series = waveformRows.map(row => Number(row[i])).filter(Number.isFinite);
     if (!series.length) continue;

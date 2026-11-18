@@ -47,6 +47,14 @@ has preliminary participant-wise validation only and no external validation.
 Signals are accepted only when the stored channel set/order can be mapped and
 the saved sample rate is compatible with the trained 500 Hz configuration.
 
+If a session contains stored samples but its electrode labels are missing or
+cannot be mapped, Device 2 still retrieves and graphs every stored channel
+using generic channel names. It explicitly blocks feature extraction and model
+predictions in that case; channel positions are never guessed. The session list
+shows each session's recorded source so CSV replay sessions are distinguishable
+from the reported Mitsar source. The Devices must use the same Aura database
+configuration for Device 2 to see Device 1 sessions.
+
 The existing bounded prototype stores up to the requested number of raw
 seconds in Neo4j. Device 2 refuses a session when the stored sample count and
 retrieved chunks disagree. It does not fill missing samples or resample.

@@ -104,6 +104,26 @@ class StreamMonitorUI:
                                     style="Horizontal.TProgressbar")
         self.busy.pack(side="right")
 
+        # Keep participant fields near the top so they remain visible even on
+        # smaller laptop screens when the waveform and log are also shown.
+        recorder = self._frame(self.root, padding=(22, 8, 22, 9), border=True)
+        recorder.pack(fill="x", padx=22, pady=(0, 6))
+        self._label(recorder, "RECORD SESSION", 9, "#70d9b9", bold=True).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 6))
+        self._entry_group(recorder, "Participant code *", self.participant_id_var, 18, 1, 0)
+        self._entry_group(recorder, "User full name *", self.participant_name_var, 24, 1, 2)
+        self._entry_group(recorder, "Duration seconds (0 = manual stop)", self.duration_var, 18, 1, 4)
+        self._entry_group(recorder, "Aura raw seconds cap", self.db_seconds_var, 15, 1, 6)
+        ttk.Checkbutton(recorder, text="Store session and raw chunks in Neo4j Aura",
+                        variable=self.use_neo4j_var).grid(row=2, column=0, columnspan=4,
+                                                         sticky="w", pady=(6, 0))
+        self.record_button = self._button(recorder, "Start recording", self.start_recording, primary=True)
+        self.record_button.grid(row=2, column=6, sticky="e", pady=(5, 0))
+        self.stop_button = self._button(recorder, "Stop and flush", self.stop_recording, danger=True)
+        self.stop_button.grid(row=2, column=7, sticky="e", padx=(8, 0), pady=(5, 0))
+        self.stop_button.configure(state="disabled")
+        for col in range(8):
+            recorder.grid_columnconfigure(col, weight=1 if col % 2 == 1 else 0)
+
         table_frame = self._frame(self.root, padding=(22, 4, 22, 8))
         table_frame.pack(fill="both", expand=True)
         columns = ("index", "name", "type", "source", "uid", "channels", "nominal", "format", "labels")
@@ -154,24 +174,6 @@ class StreamMonitorUI:
         self.db_status_label.pack(anchor="w", padx=22, pady=(0, 7))
         self.db_status_var.trace_add("write", lambda *_: self.db_status_label.configure(text=self.db_status_var.get()))
         self.root.after(250, self._draw_waveform)
-
-        recorder = self._frame(self.root, padding=(22, 10, 22, 12), border=True)
-        recorder.pack(fill="x", padx=22, pady=(0, 8))
-        self._label(recorder, "RECORD SELECTED STREAM", 9, "#70d9b9", bold=True).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 9))
-        self._entry_group(recorder, "Participant code *", self.participant_id_var, 20, 1, 0)
-        self._entry_group(recorder, "Display name (optional)", self.participant_name_var, 25, 1, 2)
-        self._entry_group(recorder, "Duration seconds (0 = manual stop)", self.duration_var, 18, 1, 4)
-        self._entry_group(recorder, "Aura raw seconds cap", self.db_seconds_var, 15, 1, 6)
-        ttk.Checkbutton(recorder, text="Store session and raw chunks in Neo4j Aura",
-                        variable=self.use_neo4j_var).grid(row=2, column=0, columnspan=4,
-                                                         sticky="w", pady=(9, 0))
-        self.record_button = self._button(recorder, "Start recording", self.start_recording, primary=True)
-        self.record_button.grid(row=2, column=6, sticky="e", pady=(7, 0))
-        self.stop_button = self._button(recorder, "Stop and flush", self.stop_recording, danger=True)
-        self.stop_button.grid(row=2, column=7, sticky="e", padx=(8, 0), pady=(7, 0))
-        self.stop_button.configure(state="disabled")
-        for col in range(8):
-            recorder.grid_columnconfigure(col, weight=1 if col % 2 == 1 else 0)
 
         self._label(self.root, "RECORDING LOG", 8, "#7189a7", bold=True).pack(anchor="w", padx=22, pady=(2, 5))
         log_frame = self._frame(self.root, padding=(22, 0, 22, 8))
@@ -359,6 +361,12 @@ class StreamMonitorUI:
         if not self.participant_id_var.get().strip():
             messagebox.showerror("Participant code required", "Enter the participant ID/code before recording.")
             return
+        if not self.participant_name_var.get().strip():
+            messagebox.showerror("User name required", "Enter the user's full name before recording so Device 2 can identify the session.")
+            return
+        if len(self.participant_id_var.get().strip()) > 100 or len(self.participant_name_var.get().strip()) > 160:
+            messagebox.showerror("Participant details too long", "Participant code must be 100 characters or fewer and full name 160 characters or fewer.")
+            return
         try:
             duration = int(self.duration_var.get().strip() or "0")
             db_seconds = int(self.db_seconds_var.get().strip() or "0")
@@ -393,8 +401,7 @@ class StreamMonitorUI:
                 "--output", str(ROOT / "data" / "live" / "device1"),
                 "--stop-file", str(self.stop_file)]
         participant_name = self.participant_name_var.get().strip()
-        if participant_name:
-            args.extend(["--participant-name", participant_name])
+        args.extend(["--participant-name", participant_name])
         if duration > 0:
             args.extend(["--duration", str(duration)])
         if self.use_neo4j_var.get():
