@@ -200,6 +200,7 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         "eeg_csv_path": str(recorder.csv_path)}}
     if neo4j:
         neo4j.submit_session(session_record)
+    print(f"Session ID: {session_id}", flush=True)
     base_metadata = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "stream_uid": meta.stream_id, "channel_count": meta.channel_count,
         **participant_properties,

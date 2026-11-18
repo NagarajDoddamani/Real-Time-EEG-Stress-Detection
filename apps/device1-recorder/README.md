@@ -23,6 +23,28 @@ labels for every entry. Select the intended stream row before recording. If
 two rows have the same stream UID, they are duplicate resolver entries for
 the same LSL outlet; the recorder selects by UID rather than relying on row
 order. If their UIDs differ, inspect and select the correct row explicitly.
+Click **Start live preview** to see the incoming channel traces. Starting a
+recording also starts this read-only preview automatically. When EEGStudio
+does not publish channel labels, the graph uses generic `Ch 01`, `Ch 02`, …
+labels; it does not guess electrode names. The display autoscale is visual
+only, signal values are not changed, and the physical units remain unknown.
+
+To store to Neo4j Aura, install the repository dependencies in the same Python
+environment that launches the UI, and make sure that environment can read the
+project `.env`:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+The UI's Aura status distinguishes recorder startup from database readback.
+It reports the session ID, then polls stored chunks and reports how many
+chunks and samples it has read back from Aura. If it says **Aura not verified**
+or reports a driver/connection error, do not treat that run as a successful
+database test. The local waveform preview can still run when the Neo4j driver
+is unavailable. A completed, nonzero readback count is evidence that this
+session's chunks were stored and retrieved; the UI does not claim that until
+it reads them back.
 
 From the repository root in PowerShell:
 

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import subprocess
 import sys
 import threading
+import time
 import uuid
+from collections import deque
 from pathlib import Path
 from tkinter import END, BooleanVar, StringVar, Tk, messagebox, ttk
 from typing import Any
@@ -35,6 +38,13 @@ class StreamMonitorUI:
         self.stop_file: Path | None = None
         self.closing = False
         self.root_closed = False
+        self.wave_stop_event: threading.Event | None = None
+        self.wave_stream_index: int | None = None
+        self.waveform_rows: deque[list[float]] = deque(maxlen=2500)
+        self.waveform_labels: list[str] = []
+        self.db_watch_stop: threading.Event | None = None
+        self.db_session_id: str | None = None
+        self.db_status_var = StringVar(value="Aura: not checked")
 
         self.status_var = StringVar(value="Ready. Start EEGStudio's LSL Outlet, then refresh.")
         self.participant_id_var = StringVar()
@@ -123,6 +133,27 @@ class StreamMonitorUI:
         self.detail_text = self._text(detail_row, height=5)
         self.detail_text.pack(fill="x")
         self._set_detail("Stream metadata will appear here. Resolver labels can be partial until an inlet connects.")
+
+        graph_header = self._frame(self.root, padding=(22, 0, 22, 5))
+        graph_header.pack(fill="x")
+        self._label(graph_header, "LIVE EEG STREAM GRAPH", 9, "#70d9b9", bold=True).pack(side="left")
+        self.preview_status = self._label(graph_header, "Preview stopped", 9, "#8b9bb0")
+        self.preview_status.pack(side="right")
+        self.preview_button = self._button(graph_header, "Start live preview", self.start_preview, primary=True)
+        self.preview_button.pack(side="right", padx=(0, 12))
+        self.preview_stop_button = self._button(graph_header, "Stop preview", self.stop_preview)
+        self.preview_stop_button.pack(side="right", padx=(0, 8))
+        self.preview_stop_button.configure(state="disabled")
+        self._label(self.root, "Display only; incoming values are unchanged. Channel units and EEG labels remain unverified until inlet metadata provides them.",
+                    8, "#8191a7").pack(anchor="w", padx=22, pady=(0, 4))
+        self.wave_canvas = __import__("tkinter").Canvas(
+            self.root, height=165, bg="#07111d", highlightthickness=1,
+            highlightbackground="#26384d")
+        self.wave_canvas.pack(fill="x", padx=22, pady=(0, 8))
+        self.db_status_label = self._label(self.root, self.db_status_var.get(), 9, "#a9b8cb")
+        self.db_status_label.pack(anchor="w", padx=22, pady=(0, 7))
+        self.db_status_var.trace_add("write", lambda *_: self.db_status_label.configure(text=self.db_status_var.get()))
+        self.root.after(250, self._draw_waveform)
 
         recorder = self._frame(self.root, padding=(22, 10, 22, 12), border=True)
         recorder.pack(fill="x", padx=22, pady=(0, 8))
@@ -347,6 +378,10 @@ class StreamMonitorUI:
             if not proceed:
                 return
 
+        # Keep a separate, read-only LSL inlet for the oscilloscope preview.
+        if self.wave_stop_event is None:
+            self.start_preview()
+
         control_dir = ROOT / "data" / "live" / "device1" / "control"
         control_dir.mkdir(parents=True, exist_ok=True)
         self.stop_file = control_dir / f"stop_{uuid.uuid4().hex}.flag"
@@ -382,8 +417,150 @@ class StreamMonitorUI:
         self.inspect_all_button.configure(state="disabled")
         self.status_var.set(f"Recording stream UID {meta.stream_id}. Duration: {'manual stop' if duration == 0 else f'{duration} seconds'}.")
         self._append_log("Starting selected LSL stream recorder...")
+        self.db_status_var.set("Aura write/readback pending; waiting for recorder session ID.") if self.use_neo4j_var.get() else self.db_status_var.set("Aura storage disabled; recording locally only.")
         threading.Thread(target=self._read_record_log, args=(self.record_process,),
                          name="recording-log-reader", daemon=True).start()
+
+    def start_preview(self) -> None:
+        index = self._selected_index()
+        if index is None or index >= len(self.streams):
+            messagebox.showinfo("Select a stream", "Select an LSL stream row first.")
+            return
+        self.stop_preview()
+        self.waveform_rows.clear()
+        self.waveform_labels = []
+        stop_event = threading.Event()
+        self.wave_stop_event = stop_event
+        self.wave_stream_index = index
+        self.preview_button.configure(state="disabled")
+        self.preview_stop_button.configure(state="normal")
+        self.preview_status.configure(text="Connecting preview inlet…")
+        info = self.streams[index]
+
+        def worker() -> None:
+            inlet = None
+            try:
+                inlet = connect(info, timeout=6.0)
+                actual_meta = extract_stream_metadata(inlet.info())
+                self.events.put(("wave-labels", actual_meta.channel_labels))
+                self.events.put(("wave-status", f"Preview connected · {actual_meta.channel_count} channels · nominal {actual_meta.nominal_srate:g} Hz · units unknown"))
+                while not stop_event.is_set():
+                    samples, _timestamps = inlet.pull_chunk(timeout=0.25, max_samples=512)
+                    if not samples:
+                        continue
+                    rows = []
+                    for sample in samples:
+                        try:
+                            rows.append([float(value) for value in sample])
+                        except (TypeError, ValueError):
+                            continue
+                    if rows:
+                        self.events.put(("wave-data", rows))
+            except Exception as exc:
+                self.events.put(("wave-status", f"Preview connection error: {exc}"))
+            finally:
+                if inlet is not None:
+                    try:
+                        inlet.close_stream()
+                    except Exception:
+                        pass
+                self.events.put(("wave-stopped", None))
+
+        threading.Thread(target=worker, name="lsl-waveform-preview", daemon=True).start()
+
+    def stop_preview(self) -> None:
+        if self.wave_stop_event is not None:
+            self.wave_stop_event.set()
+            self.wave_stop_event = None
+        if hasattr(self, "preview_stop_button"):
+            self.preview_stop_button.configure(state="disabled")
+
+    def _draw_waveform(self) -> None:
+        if self.root_closed:
+            return
+        canvas = self.wave_canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 600)
+        height = max(canvas.winfo_height(), 120)
+        rows = list(self.waveform_rows)
+        if not rows:
+            canvas.create_text(width / 2, height / 2, text="Start live preview to display incoming LSL samples",
+                               fill="#8191a7", font=("Segoe UI", 10))
+        else:
+            channel_count = min(len(rows[-1]), 32)
+            left, right, top, bottom = 70, width - 12, 8, height - 8
+            plot_h = bottom - top
+            for channel in range(channel_count):
+                y0 = top + channel * plot_h / channel_count
+                y1 = top + (channel + 1) * plot_h / channel_count
+                center = (y0 + y1) / 2
+                canvas.create_line(left, center, right, center, fill="#17283a")
+                segment = [row[channel] for row in rows if len(row) > channel and math.isfinite(row[channel])]
+                label = (self.waveform_labels[channel].strip() if channel < len(self.waveform_labels) else "")
+                label = label or f"Ch {channel + 1:02d}"
+                canvas.create_text(5, center, anchor="w", text=label[:10], fill="#87a0ba",
+                                   font=("Consolas", 8))
+                if len(segment) < 2:
+                    continue
+                low, high = min(segment), max(segment)
+                span = max(high - low, 1e-12)
+                usable = max(2.0, (y1 - y0) * 0.78)
+                points = []
+                for pos, value in enumerate(segment):
+                    x = left + pos * (right - left) / max(1, len(segment) - 1)
+                    y = y1 - 1 - ((value - low) / span) * usable
+                    points.extend((x, y))
+                if len(points) >= 4:
+                    canvas.create_line(*points, fill="#57d4b0", width=1)
+            canvas.create_text(right, height - 2, anchor="se", text=f"latest {len(rows)} samples · display autoscaled",
+                               fill="#7189a7", font=("Segoe UI", 7))
+        self.root.after(250, self._draw_waveform)
+
+    def _start_db_watch(self, session_id: str) -> None:
+        if self.db_watch_stop is not None:
+            self.db_watch_stop.set()
+        stop_event = threading.Event()
+        self.db_watch_stop = stop_event
+        self.db_session_id = session_id
+        self.db_status_var.set(f"Aura session {session_id}: checking stored chunks…")
+
+        def worker() -> None:
+            try:
+                from src.storage.neo4j_store import Neo4jReader
+                reader = Neo4jReader()
+                cursor = 0
+                total_samples = 0
+                seen_chunks = 0
+                try:
+                    while not stop_event.is_set():
+                        session_rows = reader.list_sessions(limit=200)
+                        session_row = next((row for row in session_rows
+                                            if row["session"].get("session_id") == session_id), None)
+                        if session_row is None:
+                            self.events.put(("db-status", "Aura connected, but this session is not visible in readback yet."))
+                        else:
+                            chunks = reader.read_sample_chunks_after(session_id, cursor, limit=100)
+                            for chunk in chunks:
+                                if chunk["chunk_index"] != cursor:
+                                    raise ValueError(f"readback chunk sequence gap: expected {cursor}, got {chunk['chunk_index']}")
+                                if any(len(sample) != len(chunk["channel_labels"]) for sample in chunk["samples"]):
+                                    raise ValueError(f"chunk {cursor} channel width does not match its labels")
+                                cursor += 1
+                                seen_chunks += 1
+                                total_samples += chunk["sample_count"]
+                            stored_chunks = int(session_row["raw_chunk_count"])
+                            stored_samples = int(session_row["raw_sample_count"])
+                            self.events.put(("db-status", f"Aura readback verified · session {session_id[:8]} · {seen_chunks}/{stored_chunks} chunks fetched · {total_samples}/{stored_samples} samples checked"))
+                            ended = bool(session_row["session"].get("ended_at_utc"))
+                            if ended and seen_chunks >= stored_chunks:
+                                break
+                        stop_event.wait(1.0)
+                finally:
+                    reader.close()
+            except Exception as exc:
+                self.events.put(("db-status", f"Aura readback failed: {exc}"))
+
+        threading.Thread(target=worker, name="neo4j-readback-watch", daemon=True).start()
 
     def _read_record_log(self, process: subprocess.Popen[str]) -> None:
         assert process.stdout is not None
@@ -430,6 +607,19 @@ class StreamMonitorUI:
                     self._set_busy(False, "Stream inspection complete. Select a row to review its channel mapping.")
                 elif kind == "record-log":
                     self._append_log(payload)
+                    if payload.startswith("Session ID: ") and self.use_neo4j_var.get():
+                        self._start_db_watch(payload.split(":", 1)[1].strip())
+                elif kind == "wave-labels":
+                    self.waveform_labels = payload
+                elif kind == "wave-data":
+                    self.waveform_rows.extend(payload)
+                elif kind == "wave-status":
+                    self.preview_status.configure(text=payload)
+                elif kind == "wave-stopped":
+                    self.preview_button.configure(state="normal")
+                    self.preview_stop_button.configure(state="disabled")
+                elif kind == "db-status":
+                    self.db_status_var.set(payload)
                 elif kind == "record-exit":
                     self.record_process = None
                     if self.stop_file and self.stop_file.exists():
@@ -440,6 +630,9 @@ class StreamMonitorUI:
                     self.refresh_button.configure(state="normal")
                     self.inspect_button.configure(state="normal")
                     self.inspect_all_button.configure(state="normal")
+                    self.stop_preview()
+                    if self.use_neo4j_var.get() and self.db_session_id is None:
+                        self.db_status_var.set("Aura not verified: recorder stopped before creating a database session. Check the log for the connection/driver error.")
                     self.status_var.set("Recording finished and local files were flushed." if payload == 0 else
                                         f"Recorder exited with code {payload}; review the log above.")
                     if self.closing:
@@ -461,6 +654,9 @@ class StreamMonitorUI:
             self.closing = True
             self.stop_recording()
             return
+        self.stop_preview()
+        if self.db_watch_stop is not None:
+            self.db_watch_stop.set()
         self.root.destroy()
 
 
