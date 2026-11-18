@@ -1,0 +1,43 @@
+participant_id,condition,window_count,interval_samples,status,reason
+aarya,baseline,0,0,skipped,"duplicate Baseline_start at source lines [2, 26064]; manual review required"
+aarya,stress,0,0,skipped,"duplicate Baseline_start at source lines [2, 26064]; manual review required"
+ananya_d,baseline,22,23050,included,
+ananya_d,stress,43,44102,included,
+Chaitanya,baseline,29,30338,included,
+Chaitanya,stress,73,74652,included,
+Divyansh,baseline,17,18364,included,
+Divyansh,stress,123,124002,included,
+Hema2,baseline,58,59062,included,
+Hema2,stress,43,44450,included,
+Hema_sunkad,baseline,0,0,skipped,missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest
+Hema_sunkad,stress,0,0,skipped,missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest
+KanavR,baseline,29,30128,included,
+KanavR,stress,37,38118,included,
+MadanR,baseline,28,29782,included,
+MadanR,stress,45,46846,included,
+Madhusudhan,baseline,14,15366,included,
+Madhusudhan,stress,76,77682,included,
+ManojaS,baseline,27,28980,included,
+ManojaS,stress,44,45144,included,
+Meghamam,baseline,0,0,skipped,missing Baseline_start; missing stress_start; missing stress_end; recording is not eligible in dataset manifest
+Meghamam,stress,0,0,skipped,missing Baseline_start; missing stress_start; missing stress_end; recording is not eligible in dataset manifest
+Nikita_halli,baseline,0,0,skipped,missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest
+Nikita_halli,stress,0,0,skipped,missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest
+NithinG,baseline,27,28140,included,
+NithinG,stress,40,41700,included,
+PavitraH,baseline,0,0,skipped,"duplicate Baseline_start at source lines [2, 86916, 89812]; manual review required; duplicate Baseline_end at source lines [20960, 129616]; manual review required"
+PavitraH,stress,0,0,skipped,"duplicate Baseline_start at source lines [2, 86916, 89812]; manual review required; duplicate Baseline_end at source lines [20960, 129616]; manual review required"
+PrathamS,baseline,25,26108,included,
+PrathamS,stress,2,3292,included,
+Rajeshwari,baseline,0,0,skipped,missing stress_start; recording is not eligible in dataset manifest
+Rajeshwari,stress,0,0,skipped,missing stress_start; recording is not eligible in dataset manifest
+shreeshK,baseline,31,32154,included,
+shreeshK,stress,33,34450,included,
+SnehalShetty,baseline,19,20814,included,
+SnehalShetty,stress,93,94786,included,
+VAISHNAVI,baseline,0,0,skipped,missing stress_start; missing stress_end; recording is not eligible in dataset manifest
+VAISHNAVI,stress,0,0,skipped,missing stress_start; missing stress_end; recording is not eligible in dataset manifest
+vasavi_naik,baseline,59,60566,included,
+vasavi_naik,stress,66,67500,included,
+YashS,baseline,0,0,skipped,"duplicate stress_start at source lines [60516, 138714]; manual review required; duplicate stress_end at source lines [101656, 139314]; manual review required"
+YashS,stress,0,0,skipped,"duplicate stress_start at source lines [60516, 138714]; manual review required; duplicate stress_end at source lines [101656, 139314]; manual review required"

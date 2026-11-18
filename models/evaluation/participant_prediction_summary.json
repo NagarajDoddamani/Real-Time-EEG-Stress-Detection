@@ -1,0 +1,92 @@
+{
+  "selected_model": "svm_rbf",
+  "prediction_method": "leave-one-participant-out out-of-fold predictions; each included participant was held out from its model fit",
+  "participant_count": 13,
+  "condition_summary_row_count": 26,
+  "window_count": 1103,
+  "overall_out_of_fold_metrics": {
+    "accuracy": 0.5339981867633726,
+    "precision_macro": 0.5632926879001672,
+    "recall_macro": 0.5673732952284485,
+    "f1_macro": 0.5322723822723823,
+    "balanced_accuracy": 0.5673732952284485,
+    "roc_auc": 0.5419654161993995,
+    "confusion_matrix": [
+      [
+        261,
+        124
+      ],
+      [
+        390,
+        328
+      ]
+    ],
+    "classification_report": {
+      "0": {
+        "precision": 0.4009216589861751,
+        "recall": 0.6779220779220779,
+        "f1-score": 0.5038610038610039,
+        "support": 385.0
+      },
+      "1": {
+        "precision": 0.7256637168141593,
+        "recall": 0.4568245125348189,
+        "f1-score": 0.5606837606837607,
+        "support": 718.0
+      },
+      "accuracy": 0.5339981867633726,
+      "macro avg": {
+        "precision": 0.5632926879001672,
+        "recall": 0.5673732952284485,
+        "f1-score": 0.5322723822723823,
+        "support": 1103.0
+      },
+      "weighted avg": {
+        "precision": 0.6123131345260596,
+        "recall": 0.5339981867633726,
+        "f1-score": 0.5408498881753642,
+        "support": 1103.0
+      }
+    }
+  },
+  "participant_condition_csv": "C:\\Users\\hp\\OneDrive\\Desktop\\Real-Time-EEG-Stress-Detection\\models\\evaluation\\participant_condition_predictions.csv",
+  "participants_without_valid_condition_intervals": [
+    {
+      "participant_id": "aarya",
+      "reason": "duplicate Baseline_start at source lines [2, 26064]; manual review required"
+    },
+    {
+      "participant_id": "Hema_sunkad",
+      "reason": "missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest"
+    },
+    {
+      "participant_id": "Meghamam",
+      "reason": "missing Baseline_start; missing stress_start; missing stress_end; recording is not eligible in dataset manifest"
+    },
+    {
+      "participant_id": "Nikita_halli",
+      "reason": "missing Baseline_start; missing Baseline_end; missing stress_end; recording is not eligible in dataset manifest"
+    },
+    {
+      "participant_id": "PavitraH",
+      "reason": "duplicate Baseline_start at source lines [2, 86916, 89812]; manual review required; duplicate Baseline_end at source lines [20960, 129616]; manual review required"
+    },
+    {
+      "participant_id": "Rajeshwari",
+      "reason": "missing stress_start; recording is not eligible in dataset manifest"
+    },
+    {
+      "participant_id": "VAISHNAVI",
+      "reason": "missing stress_start; missing stress_end; recording is not eligible in dataset manifest"
+    },
+    {
+      "participant_id": "YashS",
+      "reason": "duplicate stress_start at source lines [60516, 138714]; manual review required; duplicate stress_end at source lines [101656, 139314]; manual review required"
+    }
+  ],
+  "limitations": [
+    "condition markers identify experimental conditions, not clinical stress diagnoses",
+    "LOSO model comparison is not external validation",
+    "eight marker-invalid recordings are excluded from condition-labelled summary"
+  ]
+}

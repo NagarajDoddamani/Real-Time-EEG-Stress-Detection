@@ -1,0 +1,17 @@
+# Local EEG datasets and generated reports
+/data/raw/
+/data/processed/
+/data/audit/
+/data/live/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local secrets (Neo4j Aura credentials)
+.env
+.env.*
+!.env.example
