@@ -12,6 +12,18 @@ credential file or commit `.env`.
 
 ## Run
 
+To see all discovered stream entries together in a Python desktop window:
+
+```powershell
+.\apps\device1-recorder\ui.ps1
+```
+
+Use **Refresh streams**, then **Inspect all** to retrieve connected inlet
+labels for every entry. Select the intended stream row before recording. If
+two rows have the same stream UID, they are duplicate resolver entries for
+the same LSL outlet; the recorder selects by UID rather than relying on row
+order. If their UIDs differ, inspect and select the correct row explicitly.
+
 From the repository root in PowerShell:
 
 ```powershell
@@ -24,17 +36,24 @@ Use the printed stream index after checking the name, channel count, and labels:
 python -m src.acquisition.cli record --stream-index 0 --duration 1200 --neo4j --db-raw-seconds 1200 --participant-id P001 --participant-name "Participant 001" --output data/live/device1
 ```
 
-Use `--duration 600` for 10 minutes or `--duration 1200` for 20 minutes. Keep
-`--db-raw-seconds` at least as long as Device 2 needs to process. A session can
-also run until Ctrl+C by omitting `--duration`. Each completed 500-sample,
-one-second chunk is queued to Aura; Device 2 polls and consumes those chunks in
-source order. `record` stores samples without running model inference. Local
-CSV remains the complete durable recording. The graph sample path is currently
-a prototype and should be load-tested before relying on it for long studies.
+The PowerShell launcher defaults to manual stopping (`DurationSeconds = 0`):
+it keeps recording until you press Ctrl+C in Device 1's terminal. To stop
+automatically after 10 or 20 minutes, pass `-DurationSeconds 600` or
+`-DurationSeconds 1200`. `StoreRawSeconds` is a separate maximum for how many
+seconds are sent to Aura; its default is 1200. Keep it at least as long as
+Device 2 needs to process. Each completed 500-sample, one-second chunk is
+queued to Aura; Device 2 polls and consumes those chunks in source order.
+`record` stores samples without running model inference. Local CSV remains the
+complete durable recording. The graph sample path is currently a prototype and
+should be load-tested before relying on it for long studies.
 
 The PowerShell launcher asks for a participant code when one is not supplied:
 
 ```powershell
+# Manual start and stop (stop this recording with Ctrl+C in this terminal)
+.\apps\device1-recorder\record.ps1 -StreamIndex 0 -StoreRawSeconds 1200
+
+# Or automatically stop after 20 minutes
 .\apps\device1-recorder\record.ps1 -StreamIndex 0 -DurationSeconds 1200 -StoreRawSeconds 1200
 ```
 

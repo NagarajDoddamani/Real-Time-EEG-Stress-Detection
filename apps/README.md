@@ -2,7 +2,7 @@
 
 ```text
 Device 1 (EEG acquisition computer)
-  EEGStudio LSL Outlet
+  EEGStudio LSL Outlet -> Python Tkinter stream monitor (all outlets visible)
     -> src.acquisition.cli record + participant ID/display label
     -> local full CSV/JSON + one-second (500-sample) Aura chunks
 

@@ -3,8 +3,12 @@
 ## Device 1 — acquisition and storage
 
 EEGStudio publishes its selected EEG stream through LSL. Device 1 runs the
-existing acquisition CLI in `record` mode, so it records without running the
-classifier. Participant code and optional display name are written to the
+Python Tkinter stream monitor can show all resolved outlets simultaneously,
+inspect connected channel metadata, and start/stop recording from a selected
+stream. It uses the stable LSL UID so a reordered discovery list does not
+silently select a different outlet. Recording still runs through the existing
+acquisition CLI in `record` mode and does not run the classifier. Participant
+code and optional display name are written to the
 session when it is created. Original samples and LSL timestamps are written
 locally; sample chunks are sent to Neo4j Aura in one-second groups. Use
 `apps/device1-recorder/README.md` for commands.

@@ -37,7 +37,7 @@ def print_streams(streams: list[Any]) -> None:
         return
     for index, info in enumerate(streams):
         meta = extract_stream_metadata(info)
-        print(f"[{index}] name={meta.name!r} type={meta.stream_type!r} source_id={meta.source_id!r} "
+        print(f"[{index}] uid={meta.stream_id!r} name={meta.name!r} type={meta.stream_type!r} source_id={meta.source_id!r} "
               f"channels={meta.channel_count} nominal_hz={meta.nominal_srate:g} "
               f"format={meta.channel_format} labels={meta.channel_labels}")
         if not meta.channel_labels or not any(meta.channel_labels):
@@ -48,9 +48,16 @@ def print_streams(streams: list[Any]) -> None:
             print("    This is a recorded CSV replay stream, not live EEG hardware.")
 
 
-def choose_stream(streams: list[Any], index: int | None) -> Any:
+def choose_stream(streams: list[Any], index: int | None, stream_uid: str | None = None) -> Any:
     if not streams:
         raise RuntimeError("no LSL streams available")
+    if stream_uid:
+        matches = [item for item in streams if extract_stream_metadata(item).stream_id == stream_uid]
+        if not matches:
+            raise ValueError(f"LSL stream UID {stream_uid!r} is no longer available; run discover again")
+        # Resolver duplicates can represent the same outlet on multiple
+        # interfaces. An exact UID identifies the same outlet instance.
+        return matches[0]
     if index is None:
         if len(streams) == 1:
             raise RuntimeError("one stream is available but automatic selection is disabled; pass --stream-index 0")
@@ -84,7 +91,7 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         participant_properties["participant_name"] = participant_name
     streams = resolve_streams(args.resolve_wait)
     print_streams(streams)
-    info = choose_stream(streams, args.stream_index)
+    info = choose_stream(streams, args.stream_index, getattr(args, "stream_uid", None))
     if infer:
         model = TrainedModel(args.model, args.model_metadata, args.config)
         expected = float(model.metadata["sampling_frequency_hz"])
@@ -218,6 +225,9 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         print("WARNING: exploratory condition predictions only; model has no external validation and signal units/raw status remain unverified.")
     try:
         while args.duration is None or time.monotonic() - started < args.duration:
+            if args.stop_file and args.stop_file.is_file():
+                print("Stop requested by Device 1 UI; flushing recording.")
+                break
             chunk, timestamps = inlet.pull_chunk(timeout=0.25, max_samples=512)
             if not chunk:
                 empty_chunk_count += 1
@@ -347,7 +357,9 @@ def main(argv: list[str] | None = None) -> int:
                             ("predict", "record and run trained-model window predictions"),
                             ("live", "stream predictions continuously")):
         cmd = sub.add_parser(name, help=help_text)
-        cmd.add_argument("--stream-index", type=int, required=True, help="explicit index from discover output")
+        stream_selection = cmd.add_mutually_exclusive_group(required=True)
+        stream_selection.add_argument("--stream-index", type=int, help="explicit index from discover output")
+        stream_selection.add_argument("--stream-uid", help="select by exact LSL stream UID from discovery metadata")
         cmd.add_argument("--event-stream-index", type=int, help="optional separate marker/event stream index")
         cmd.add_argument("--duration", type=float, help="seconds; omit to run until Ctrl+C")
         cmd.add_argument("--resolve-wait", type=float, default=2.0)
@@ -357,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd.add_argument("--rate-tolerance", type=float, default=0.02)
         cmd.add_argument("--participant-id", help="study participant code stored with the session")
         cmd.add_argument("--participant-name", help="optional display label shown on Device 2")
+        cmd.add_argument("--stop-file", type=Path,
+                         help="stop recording gracefully when this file appears; used by the Device 1 UI")
         cmd.add_argument("--db-raw-seconds", type=float, default=0.0,
                          help="store only this initial duration of raw stream samples in Neo4j chunks (requires --neo4j)")
         cmd.add_argument("--output", type=Path, default=ROOT / "data" / "live")
