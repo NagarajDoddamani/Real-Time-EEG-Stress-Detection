@@ -58,7 +58,12 @@ def clean_header(value: str, index: int) -> str:
 
 def audit_file(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
-        reader = csv.reader(stream, delimiter=";", strict=False)
+        header_line = stream.readline()
+        # Most exports are semicolon-delimited, but detect a different
+        # delimiter when the header clearly contains more of it.
+        delimiter = ";" if header_line.count(";") >= header_line.count(",") else ","
+        stream.seek(0)
+        reader = csv.reader(stream, delimiter=delimiter, strict=False)
         try:
             raw_header = next(reader)
         except StopIteration:
@@ -173,6 +178,28 @@ def audit_file(path: Path) -> dict[str, Any]:
             "non_numeric_examples": st["first_values"],
         }
 
+    column_types = {}
+    for name, st in field_stats.items():
+        seen_numeric = st["numeric"] > 0
+        seen_text = st["non_numeric"] > 0
+        if seen_numeric and seen_text:
+            inferred = "mixed numeric and text"
+        elif seen_numeric:
+            inferred = "numeric"
+        elif seen_text:
+            inferred = "text"
+        else:
+            inferred = "empty"
+        if st["non_finite"]:
+            inferred += " (contains non-finite values)"
+        column_types[name] = {
+            "inferred_type": inferred,
+            "numeric_values": st["numeric"],
+            "text_values": st["non_numeric"],
+            "missing_values": st["missing"],
+            "non_finite_values": st["non_finite"],
+        }
+
     time_summary = {}
     for field, vals in timestamp_seconds.items():
         # A duration is reported only if timestamp values occur on nearly every row.
@@ -190,11 +217,12 @@ def audit_file(path: Path) -> dict[str, Any]:
         "participant_id": path.stem,
         "rows": row_count,
         "columns": len(headers),
-        "delimiter": ";",
+        "delimiter": delimiter,
         "headers": headers,
         "eeg_channels_found": eeg_columns,
         "missing_expected_eeg_channels": absent_eeg,
         "auxiliary_fields": auxiliary,
+        "column_data_types": column_types,
         "row_width_counts": {str(k): v for k, v in sorted(width_counts.items())},
         "rows_with_width_mismatch": malformed_width,
         "short_rows": short_rows,

@@ -4,18 +4,22 @@
 
 EEGStudio publishes its selected EEG stream through LSL. Device 1 runs the
 existing acquisition CLI in `record` mode, so it records without running the
-classifier. Original samples and LSL timestamps are written locally; session
-metadata and a configured bounded prefix of samples are sent to Neo4j Aura.
-Use `apps/device1-recorder/README.md` for commands.
+classifier. Participant code and optional display name are written to the
+session when it is created. Original samples and LSL timestamps are written
+locally; sample chunks are sent to Neo4j Aura in one-second groups. Use
+`apps/device1-recorder/README.md` for commands.
 
 ## Device 2 — retrieval, inference, and UI
 
-The Electron application lists sessions that contain raw EEG chunks. On
-selection, it asks `src/dashboard/device2_service.py` to retrieve the stored
-session and run the existing `TrainedModel` and `RollingWindowBuffer` code.
-Channel mapping is based on stored labels. The rate, finite values, timestamps,
-and sample count are checked before predictions are generated. `window_features`
-remains the only feature implementation; the UI does not recalculate features.
+The Electron application lists sessions that contain raw EEG chunks and shows
+participant fields from their Neo4j session node. On selection, it starts the
+monitor service in `src/dashboard/device2_service.py`. That service reads from
+chunk zero and polls for each subsequent chunk once per second. It uses the
+existing `TrainedModel` and `RollingWindowBuffer` code. Channel mapping is
+based on stored labels. Rate, timestamp continuity, finite values, sample
+count, and chunk sequence are checked before predictions are generated.
+`window_features` remains the only feature implementation; the UI does not
+recalculate features. Predictions update on the model's two-second window step.
 
 ## Data flow
 
@@ -29,12 +33,14 @@ flowchart LR
   subgraph D2[Device 2: analysis computer]
     UI[Electron desktop UI] --> Service[Python session analysis service]
     Service --> Aura
+    Aura -->|one-second chunks: 500 samples| Service
     Service --> Validate[Channel, sample-rate, timestamp, and value checks]
-    Validate --> Windows[4 s rolling windows, 50% overlap]
+    Validate --> Windows[4 s rolling windows, 2 s step]
     Windows --> Features[Existing training-compatible feature extractor]
     Features --> Model[Saved SVM pipeline]
     Model --> Output[Baseline/stress condition estimates]
     Output --> UI
+    UI --> PDF[Session summary and PDF report]
   end
   Output -. later, separate module .-> Music[Music policy and local music folders]
 ```

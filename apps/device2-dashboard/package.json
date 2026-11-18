@@ -1,0 +1,13 @@
+{
+  "name": "eeg-device2-analysis-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron interface for stored EEG session retrieval and model inference",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^45.3.4"
+  }
+}

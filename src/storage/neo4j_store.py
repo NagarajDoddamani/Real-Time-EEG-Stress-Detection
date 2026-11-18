@@ -183,7 +183,7 @@ class Neo4jWriter:
                 c.first_timestamp = $first_timestamp, c.last_timestamp = $last_timestamp,
                 c.sampling_rate_hz = $sampling_rate_hz, c.channel_labels = $channel_labels,
                 c.values_json = $values_json, c.timestamps_json = $timestamps_json,
-                c.storage_kind = 'one_minute_test_chunk'
+                c.storage_kind = 'raw_eeg_sample_chunk'
             MERGE (s)-[:HAS_EEG_DATA_CHUNK]->(c)
         """, **item).consume()
 
@@ -250,6 +250,49 @@ class Neo4jReader:
                 "stream": dict(row["stream"]) if row["stream"] else None,
                 "predictions": [dict(item) for item in row["predictions"]],
                 "events": [dict(item) for item in row["events"] if item is not None]}
+
+    def get_session_properties(self, session_id: str) -> dict[str, Any] | None:
+        """Read only session properties, including participant and active status."""
+        query = "MATCH (s:EEGSession {session_id: $session_id}) RETURN properties(s) AS session"
+        with self.driver.session(database=self.database) as session:
+            row = session.execute_read(lambda tx: tx.run(query, session_id=session_id).single())
+        return dict(row["session"]) if row else None
+
+    def read_sample_chunks_after(self, session_id: str, first_chunk_index: int,
+                                 limit: int = 10) -> list[dict[str, Any]]:
+        """Fetch newly committed chunks in source order for live polling."""
+        if first_chunk_index < 0 or not 1 <= limit <= 100:
+            raise ValueError("first_chunk_index must be nonnegative and limit must be 1..100")
+        query = """
+            MATCH (:EEGSession {session_id: $session_id})-[:HAS_EEG_DATA_CHUNK]->(c:EEGDataChunk)
+            WHERE c.chunk_index >= $first_chunk_index
+            RETURN c.chunk_index AS chunk_index, c.first_sample_index AS first_sample_index,
+                   c.sample_count AS sample_count, c.sampling_rate_hz AS sampling_rate_hz,
+                   c.channel_labels AS channel_labels, c.values_json AS values_json,
+                   c.timestamps_json AS timestamps_json
+            ORDER BY c.chunk_index
+            LIMIT $limit
+        """
+        with self.driver.session(database=self.database) as session:
+            rows = session.execute_read(lambda tx: list(tx.run(
+                query, session_id=session_id, first_chunk_index=first_chunk_index, limit=limit).data()))
+        chunks = []
+        for row in rows:
+            values = json.loads(row["values_json"])
+            timestamps = json.loads(row["timestamps_json"])
+            count = int(row["sample_count"])
+            if len(values) != count or len(timestamps) != count:
+                raise ValueError(f"database chunk {row['chunk_index']} has inconsistent sample/timestamp counts")
+            chunks.append({
+                "chunk_index": int(row["chunk_index"]),
+                "first_sample_index": int(row["first_sample_index"]),
+                "sample_count": count,
+                "sampling_rate_hz": float(row["sampling_rate_hz"]),
+                "channel_labels": list(row["channel_labels"]),
+                "samples": values,
+                "timestamps": timestamps,
+            })
+        return chunks
 
     def export_sample_chunks(self, session_id: str, max_samples: int
                              ) -> tuple[list[str], list[list[Any]], list[float], float]:

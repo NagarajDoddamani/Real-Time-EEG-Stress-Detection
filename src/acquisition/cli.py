@@ -73,6 +73,15 @@ def connect(info: Any, timeout: float) -> Any:
 
 def _run(args: argparse.Namespace, infer: bool) -> int:
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    participant_id = (getattr(args, "participant_id", None) or "").strip()
+    participant_name = (getattr(args, "participant_name", None) or "").strip()
+    if len(participant_id) > 100 or len(participant_name) > 160:
+        raise ValueError("participant ID must be <=100 characters and display name <=160 characters")
+    participant_properties = {}
+    if participant_id:
+        participant_properties["participant_id"] = participant_id
+    if participant_name:
+        participant_properties["participant_name"] = participant_name
     streams = resolve_streams(args.resolve_wait)
     print_streams(streams)
     info = choose_stream(streams, args.stream_index)
@@ -174,6 +183,8 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             db_storage_rate, db_raw_sample_limit, chunk_samples=int(round(db_storage_rate)))
     session_record = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "properties": {"started_at_utc": start_wall,
+        **participant_properties,
+        "stream_name": meta.name, "stream_type": meta.stream_type, "source_id": meta.source_id,
         "channel_count": meta.channel_count, "channel_labels": meta.channel_labels,
         "nominal_sampling_rate_hz": meta.nominal_srate, "channel_format": meta.channel_format,
         "signal_units": "unknown", "device": ("simulated LSL test publisher; not Mitsar hardware"
@@ -184,6 +195,7 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         neo4j.submit_session(session_record)
     base_metadata = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "stream_uid": meta.stream_id, "channel_count": meta.channel_count,
+        **participant_properties,
         "channel_labels_in_stream_order": meta.channel_labels, "nominal_sampling_rate_hz": meta.nominal_srate,
         "channel_format": meta.channel_format, "recording_start_utc": start_wall,
         "log_path": str(log_path),
@@ -343,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd.add_argument("--disconnect-timeout", type=float, default=10.0,
                          help="stop and flush if no EEG samples arrive within this many seconds")
         cmd.add_argument("--rate-tolerance", type=float, default=0.02)
+        cmd.add_argument("--participant-id", help="study participant code stored with the session")
+        cmd.add_argument("--participant-name", help="optional display label shown on Device 2")
         cmd.add_argument("--db-raw-seconds", type=float, default=0.0,
                          help="store only this initial duration of raw stream samples in Neo4j chunks (requires --neo4j)")
         cmd.add_argument("--output", type=Path, default=ROOT / "data" / "live")
