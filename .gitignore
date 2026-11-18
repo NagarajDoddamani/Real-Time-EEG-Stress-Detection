@@ -11,6 +11,12 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # Local secrets (Neo4j Aura credentials)
 .env
 .env.*
