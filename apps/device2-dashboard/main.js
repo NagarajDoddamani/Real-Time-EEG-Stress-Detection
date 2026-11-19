@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-const activeMonitors = new Map();
+const activeLiveSessions = new Map();
 
 function pythonExecutable() {
   return process.env.EEG_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
@@ -38,32 +38,44 @@ ipcMain.handle('sessions:list', async (_event, limit) => {
   return runService(['sessions', '--limit', String(safeLimit)]);
 });
 
-ipcMain.handle('session:predict', async (_event, sessionId) => {
+ipcMain.handle('lsl:discover', async () => runService(['discover', '--json']));
+
+ipcMain.handle('session:report', async (_event, sessionId) => {
   if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) {
     throw new Error('Select a valid session ID first.');
   }
-  return runService(['predict-session', '--session-id', sessionId]);
+  return runService(['session-report', '--session-id', sessionId]);
 });
 
-ipcMain.handle('monitor:start', (event, sessionId) => {
-  if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) {
-    throw new Error('Select a valid session ID first.');
-  }
+ipcMain.handle('live:start', async (event, details) => {
+  const participantId = String(details?.participantId || '').trim();
+  const participantName = String(details?.participantName || '').trim();
+  const streamUid = String(details?.streamUid || '').trim();
+  if (!participantId || participantId.length > 100) throw new Error('Enter a participant ID (up to 100 characters).');
+  if (!participantName || participantName.length > 160) throw new Error('Enter the participant full name (up to 160 characters).');
+  if (!streamUid || streamUid.length > 512) throw new Error('Select an available EEGStudio LSL stream.');
   const owner = event.sender.id;
-  if (activeMonitors.has(owner)) throw new Error('A session monitor is already running in this window.');
-  const child = spawn(pythonExecutable(), ['-m', 'src.dashboard.device2_service', 'monitor-session',
-    '--session-id', sessionId, '--poll-interval', '1'], {
+  if (activeLiveSessions.has(owner)) throw new Error('A live EEG session is already active.');
+  const controlDir = path.join(projectRoot, 'data', 'live', 'control');
+  await fs.mkdir(controlDir, { recursive: true });
+  const stopFile = path.join(controlDir, `stop_${Date.now()}_${Math.random().toString(16).slice(2)}.flag`);
+  try { await fs.unlink(stopFile); } catch { /* unique filename */ }
+  const child = spawn(pythonExecutable(), ['-m', 'src.acquisition.cli', 'live',
+    '--stream-uid', streamUid,
+    '--participant-id', participantId,
+    '--participant-name', participantName,
+    '--output', path.join(projectRoot, 'data', 'live', 'combined-app'),
+    '--stop-file', stopFile,
+    '--neo4j', '--json-events', '--allow-unmapped'], {
     cwd: projectRoot,
     windowsHide: true,
     env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe']
   });
-  activeMonitors.set(owner, child);
-  event.sender.once('destroyed', () => {
-    if (activeMonitors.get(owner) === child) {
-      try { child.stdin.write('{"command":"stop"}\n'); } catch { child.kill(); }
-    }
-  });
+  activeLiveSessions.set(owner, { child, stopFile });
+  const sendLiveEvent = (channel, payload) => {
+    if (!event.sender.isDestroyed()) event.sender.send(channel, payload);
+  };
   let stdoutBuffer = '';
   child.stdout.setEncoding('utf8').on('data', chunk => {
     stdoutBuffer += chunk;
@@ -71,28 +83,34 @@ ipcMain.handle('monitor:start', (event, sessionId) => {
     stdoutBuffer = lines.pop() || '';
     for (const line of lines) {
       if (!line.trim()) continue;
-      try { event.sender.send('monitor:event', JSON.parse(line)); }
-      catch { event.sender.send('monitor:event', { type: 'error', error: 'Invalid message from analysis service.' }); }
+      try { sendLiveEvent('live:event', JSON.parse(line)); }
+      catch { sendLiveEvent('live:event', { type: 'log', message: line }); }
     }
   });
   let stderr = '';
   child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
-  child.on('error', error => event.sender.send('monitor:event', { type: 'error', error: error.message }));
-  child.on('close', code => {
+  child.on('error', error => sendLiveEvent('live:event', { type: 'error', error: error.message }));
+  child.on('close', async code => {
     if (stdoutBuffer.trim()) {
-      try { event.sender.send('monitor:event', JSON.parse(stdoutBuffer)); }
-      catch { event.sender.send('monitor:event', { type: 'error', error: stdoutBuffer.trim() }); }
+      try { sendLiveEvent('live:event', JSON.parse(stdoutBuffer)); }
+      catch { sendLiveEvent('live:event', { type: 'log', message: stdoutBuffer.trim() }); }
     }
-    activeMonitors.delete(owner);
-    event.sender.send('monitor:exit', { exitCode: code, detail: code === 0 ? '' : stderr.trim() });
+    activeLiveSessions.delete(owner);
+    try { await fs.unlink(stopFile); } catch { /* already removed */ }
+    sendLiveEvent('live:exit', { exitCode: code, detail: code === 0 ? '' : stderr.trim() });
   });
-  return { started: true, sessionId };
+  event.sender.once('destroyed', async () => {
+    if (activeLiveSessions.get(owner)?.child === child) {
+      try { await fs.writeFile(stopFile, 'stop\n', 'utf8'); } catch { child.kill(); }
+    }
+  });
+  return { started: true };
 });
 
-ipcMain.handle('monitor:stop', event => {
-  const child = activeMonitors.get(event.sender.id);
-  if (!child) return { stopped: false };
-  child.stdin.write('{"command":"stop"}\n');
+ipcMain.handle('live:stop', async event => {
+  const active = activeLiveSessions.get(event.sender.id);
+  if (!active) return { stopped: false };
+  await fs.writeFile(active.stopFile, 'stop\n', 'utf8');
   return { stopped: true };
 });
 
@@ -124,7 +142,7 @@ ipcMain.handle('report:pdf', async (_event, report) => {
     <div class="cell"><div class="label">Participant name / label</div><div class="value">${htmlEscape(session.participant_name || 'Not recorded')}</div></div>
     <div class="cell"><div class="label">Session ID</div><div class="value">${htmlEscape(session.session_id)}</div></div>
     <div class="cell"><div class="label">Session started</div><div class="value">${htmlEscape(session.started_at_utc || 'Unknown')}</div></div>
-    <div class="cell"><div class="label">Processed duration</div><div class="value">${htmlEscape(Number(summary.processed_duration_seconds || 0).toFixed(1))} seconds</div></div>
+    <div class="cell"><div class="label">Processed duration</div><div class="value">${htmlEscape(Number(summary.processed_duration_seconds ?? summary.duration_seconds ?? 0).toFixed(1))} seconds</div></div>
     <div class="cell"><div class="label">Samples / rate</div><div class="value">${htmlEscape(summary.sample_count || 0)} / ${htmlEscape(session.nominal_sampling_rate_hz || 500)} Hz</div></div>
     <div class="cell"><div class="label">Channels</div><div class="value">${htmlEscape((session.channel_labels_used || []).join(', '))}</div></div>
     <div class="cell"><div class="label">Model / participant-wise CV</div><div class="value">${htmlEscape(report.model_algorithm || 'Saved model')} / accuracy ${report.model?.validation_accuracy == null ? 'not reported' : htmlEscape((Number(report.model.validation_accuracy) * 100).toFixed(1) + '%')} / macro F1 ${report.model?.validation_macro_f1 == null ? 'not reported' : htmlEscape(Number(report.model.validation_macro_f1).toFixed(3))}</div></div>
@@ -146,10 +164,11 @@ ipcMain.handle('report:pdf', async (_event, report) => {
 
 function createWindow() {
   const window = new BrowserWindow({
-    width: 1180,
-    height: 820,
-    minWidth: 900,
-    minHeight: 650,
+    title: 'NeuroMonitor | Live EEG',
+    width: 1480,
+    height: 980,
+    minWidth: 1000,
+    minHeight: 740,
     backgroundColor: '#0b1020',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -168,7 +187,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('before-quit', () => {
-  for (const child of activeMonitors.values()) {
-    try { child.stdin.write('{"command":"stop"}\n'); } catch { child.kill(); }
+  for (const { child, stopFile } of activeLiveSessions.values()) {
+    fs.writeFile(stopFile, 'stop\n', 'utf8').catch(() => child.kill());
   }
 });

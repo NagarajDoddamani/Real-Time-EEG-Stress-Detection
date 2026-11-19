@@ -2,89 +2,87 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EEG Live Monitor</title>
+  <title>NeuroMonitor | Live EEG</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-icon">E</span><span>NEURO<br>MONITOR</span></div>
-      <div class="side-caption">DEVICE 02</div>
-      <div class="side-status"><i id="sideDot"></i><span id="sideStatus">WAITING</span></div>
-      <div class="side-bottom">EEG / LIVE ANALYSIS</div>
+      <div class="brand"><span class="brand-icon">N</span><span>NEURO<br>MONITOR</span></div>
+      <div class="side-section">WORKSPACE</div>
+      <a class="nav-item active" href="#live"><span class="nav-icon">◉</span><span>Live analysis</span></a>
+      <a class="nav-item" href="#history"><span class="nav-icon">▤</span><span>Session reports</span></a>
+      <div class="side-status"><i id="sideDot"></i><span id="sideStatus">READY</span></div>
+      <div class="side-bottom">EEG / REAL-TIME ANALYSIS</div>
     </aside>
 
-    <main class="workspace">
+    <main class="workspace" id="live">
       <header class="topbar">
-        <div><p class="eyebrow">EEG SESSION / REAL-TIME DASHBOARD</p><h1>Live session monitor</h1></div>
+        <div><p class="eyebrow">MITSAR EEG · LIVE WORKSPACE</p><h1>EEG session monitor</h1><p class="subtitle">Acquire, analyze, and review a participant session in one place.</p></div>
         <div class="top-actions">
-          <div class="db-pill"><i id="dbDot"></i><span id="dbStatus">Aura not checked</span></div>
-          <button id="refreshButton" class="icon-button" title="Refresh sessions">REFRESH</button>
+          <div class="status-pill"><i id="lslDot"></i><span id="lslStatus">LSL not checked</span></div>
+          <div class="status-pill"><i id="dbDot"></i><span id="dbStatus">Aura not checked</span></div>
         </div>
       </header>
 
-      <section class="metric-row">
-        <article class="metric-card"><span class="metric-label">SAMPLES PROCESSED</span><strong id="sampleMetric">0</strong><small id="sampleSub">Waiting for session</small></article>
-        <article class="metric-card"><span class="metric-label">STREAM RATE</span><strong id="rateMetric">-- <em>Hz</em></strong><small>Timestamp-derived</small></article>
-        <article class="metric-card"><span class="metric-label">ELAPSED EEG</span><strong id="elapsedMetric">00:00</strong><small>Source recording time</small></article>
-        <article class="metric-card"><span class="metric-label">MODEL WINDOWS</span><strong id="windowMetric">0</strong><small>4 s window / 2 s step</small></article>
+      <section class="setup-panel panel">
+        <div class="section-heading"><div><p class="eyebrow">SESSION SETUP</p><h2>Participant and EEG source</h2></div><span class="required-note">Required fields marked *</span></div>
+        <div class="setup-grid">
+          <label class="field"><span>Participant ID *</span><input id="participantIdInput" autocomplete="off" maxlength="100" placeholder="e.g. P001"></label>
+          <label class="field"><span>Participant full name *</span><input id="participantNameInput" autocomplete="off" maxlength="160" placeholder="Enter participant name"></label>
+          <label class="field source-field"><span>EEGStudio LSL stream *</span><select id="streamSelect"><option value="">Discover streams to begin</option></select></label>
+          <button id="refreshStreamsButton" class="button secondary">Refresh streams</button>
+        </div>
+        <div id="streamInfo" class="stream-info">Start EEGStudio's LSL Outlet, then discover streams.</div>
+        <div class="setup-footer">
+          <p class="privacy-note">Raw EEG is recorded locally. Aura stores participant/session metadata and model results; raw EEG is not sent to the database.</p>
+          <div class="setup-actions"><button id="startButton" class="button primary" disabled>Start live session</button><button id="stopButton" class="button stop" disabled>Stop and save session</button><button id="reportButton" class="button secondary" disabled>Download PDF report</button></div>
+        </div>
       </section>
 
-      <div class="main-grid">
-        <section class="panel session-panel">
-          <div class="panel-heading"><div><p class="eyebrow">NEO4J AURA</p><h2>Participants & sessions</h2></div><span id="sessionCount" class="small-count">0</span></div>
-          <p class="panel-help">Select a participant session. Device 2 reads stored one-second chunks from the start, including chunks saved before you opened this monitor.</p>
-          <div id="sessionList" class="session-list"><div class="empty-state">Connecting to the session store...</div></div>
+      <section class="metric-row" aria-label="Live session metrics">
+        <article class="metric-card"><span class="metric-label">SAMPLES RECEIVED</span><strong id="sampleMetric">0</strong><small id="sampleSub">Waiting for session</small></article>
+        <article class="metric-card"><span class="metric-label">OBSERVED RATE</span><strong id="rateMetric">-- <em>Hz</em></strong><small>Calculated from LSL timestamps</small></article>
+        <article class="metric-card"><span class="metric-label">SESSION DURATION</span><strong id="elapsedMetric">00:00</strong><small>Source recording time</small></article>
+        <article class="metric-card"><span class="metric-label">PREDICTION WINDOWS</span><strong id="windowMetric">0</strong><small>4 s window · 2 s step</small></article>
+      </section>
+
+      <div id="statusMessage" class="status-message" role="status">Connect an EEGStudio LSL stream to begin.</div>
+
+      <div class="dashboard-grid">
+        <section class="panel chart-panel eeg-panel">
+          <div class="chart-heading"><div><p class="eyebrow">INCOMING SIGNAL</p><h2>EEG channel traces</h2></div><div class="chart-badge"><i id="waveDot"></i><span id="waveformStatus">NO SIGNAL</span></div></div>
+          <p class="chart-note">Recent 5 seconds · display autoscaling only · physical units are unverified</p>
+          <div class="canvas-wrap eeg-wrap"><canvas id="eegCanvas" aria-label="Live EEG traces"></canvas></div>
+          <div class="time-axis"><span id="waveStart">--</span><span>RECENT 5 SECONDS</span><span id="waveEnd">--</span></div>
         </section>
 
-        <section class="right-content">
-          <section class="panel participant-panel">
-            <div class="participant-main">
-              <div class="avatar" id="participantAvatar">--</div>
-              <div class="participant-text"><p class="eyebrow">SELECTED PARTICIPANT</p><h2 id="participantName">No session selected</h2><p id="participantId" class="subline">Participant code unavailable</p></div>
-            </div>
-            <div class="participant-facts">
-              <div><span>SESSION</span><strong id="sessionShortId">--</strong></div>
-              <div><span>EEG STREAM</span><strong id="streamName">--</strong></div>
-              <div><span>CHANNELS</span><strong id="channelCount">--</strong></div>
-              <div><span>STARTED</span><strong id="sessionStart">--</strong></div>
-            </div>
-            <div class="control-row">
-              <button id="startButton" class="button start-button" disabled><span class="play-icon">&#9654;</span> Start processing</button>
-              <button id="stopButton" class="button stop-button" disabled><span class="stop-icon"></span> Stop &amp; summarize</button>
-              <button id="pdfButton" class="button pdf-button" disabled>Download PDF report</button>
-            </div>
-            <p id="statusMessage" class="status-message" role="status">Choose a session with stored EEG samples.</p>
+        <div class="insights-column">
+          <section class="panel prediction-panel">
+            <p class="eyebrow">LATEST MODEL ESTIMATE</p>
+            <h2 id="latestPrediction">Waiting for EEG window</h2>
+            <p id="latestPredictionTime" class="subline">A complete 4-second window is required.</p>
+            <div class="score-row"><div><span class="metric-label">STRESS SCORE · UNCALIBRATED</span><strong id="latestScore">--%</strong></div><div class="score-track"><i id="scoreBar"></i></div></div>
+            <p class="disclaimer">Experimental-condition estimate only; not a clinical diagnosis.</p>
           </section>
-
-          <section class="prediction-strip panel">
-            <div><p class="eyebrow">LATEST WINDOW ESTIMATE</p><h2 id="latestPrediction">Waiting for EEG window</h2><p id="latestPredictionTime" class="subline">A complete four-second window is required first.</p></div>
-            <div class="score-box"><span>MODEL STRESS SCORE</span><strong id="latestScore">--<small>%</small></strong><div class="score-track"><i id="scoreBar"></i></div><small class="score-note">Uncalibrated model output</small></div>
-          </section>
-
-          <section class="panel chart-panel eeg-panel">
-            <div class="chart-heading"><div><p class="eyebrow">INCOMING SIGNAL</p><h2>EEG channel stream</h2></div><div class="chart-badge"><i class="live-dot"></i><span id="waveformStatus">NO SAMPLES</span></div></div>
-            <div class="chart-note">Stacked, auto-fitted channel traces for viewing. Display scaling only; raw received samples remain unchanged.</div>
-            <div class="canvas-wrap eeg-wrap"><canvas id="eegCanvas" aria-label="Stacked EEG waveform traces"></canvas></div>
-            <div class="time-axis"><span id="waveStart">--</span><span>Recent 5 seconds</span><span id="waveEnd">--</span></div>
-          </section>
-
           <section class="panel chart-panel stress-panel">
-            <div class="chart-heading"><div><p class="eyebrow">TREND OVER SESSION TIME</p><h2>Model stress score</h2></div><div class="trend-legend"><i></i> Stress score (uncalibrated)</div></div>
-            <div class="canvas-wrap trend-wrap"><canvas id="stressCanvas" aria-label="Stress score trend over time"></canvas></div>
-            <div class="time-axis"><span>Session start</span><span>Window estimates update every 2 seconds after warm-up</span><span id="trendEnd">00:00</span></div>
+            <div class="chart-heading"><div><p class="eyebrow">SESSION TREND</p><h2>Stress score</h2></div><span class="trend-key"><i></i>Model output</span></div>
+            <div class="canvas-wrap trend-wrap"><canvas id="stressCanvas" aria-label="Stress score trend"></canvas></div>
+            <div class="time-axis"><span>SESSION START</span><span id="trendEnd">00:00</span></div>
           </section>
-
-          <section class="bottom-grid">
-            <section class="panel history-panel"><div class="panel-heading"><div><p class="eyebrow">RECENT WINDOWS</p><h2>Prediction history</h2></div><span id="historyCount" class="small-count">0</span></div><div id="predictionList" class="prediction-list"><div class="empty-state compact">No complete windows yet.</div></div></section>
-            <section class="panel music-panel"><div class="panel-heading"><div><p class="eyebrow">LATER PHASE</p><h2>Music response</h2></div><span class="coming-tag">NOT ACTIVE</span></div><p class="panel-help">Music folders and automatic playback are not connected. A separate, validated policy will be needed before any music is selected from model output.</p><div class="music-placeholder"><span class="music-symbol">&#9835;</span><span>Calming / stress-inducing tracks</span><span class="music-lock">LOCKED</span></div></section>
-          </section>
-
-          <footer class="disclaimer"><span><i></i> MODEL OUTPUTS DESCRIBE EXPERIMENTAL CONDITIONS, NOT A CLINICAL DIAGNOSIS</span><span>Participant signal units are currently unverified.</span></footer>
-        </section>
+          <section class="panel history-panel"><div class="section-heading"><div><p class="eyebrow">LIVE RESULTS</p><h2>Recent prediction windows</h2></div><span id="historyCount" class="small-count">0</span></div><div id="predictionList" class="prediction-list"><div class="empty-state">Predictions will appear after the first complete window.</div></div></section>
+        </div>
       </div>
+
+      <section class="panel archive-panel" id="history">
+        <div class="section-heading"><div><p class="eyebrow">NEO4J AURA</p><h2>Saved participants and session reports</h2></div><button id="refreshSessionsButton" class="button secondary">Refresh sessions</button></div>
+        <p class="section-help">Choose a participant session to load its saved prediction trend and details. Raw EEG stays in the local recording and is not downloaded from Aura.</p>
+        <div id="sessionList" class="archive-list"><div class="empty-state">Connecting to Aura…</div></div>
+      </section>
+
+      <footer class="app-footer"><span><i></i> OUTPUTS DESCRIBE EXPERIMENTAL CONDITIONS, NOT CLINICAL STRESS DIAGNOSES</span><span>Signal units and EEGStudio stream processing are unverified.</span></footer>
     </main>
   </div>
   <script src="renderer.js"></script>

@@ -1,19 +1,20 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('eegApp', {
+  discoverStreams: () => ipcRenderer.invoke('lsl:discover'),
+  startLive: details => ipcRenderer.invoke('live:start', details),
+  stopLive: () => ipcRenderer.invoke('live:stop'),
   listSessions: limit => ipcRenderer.invoke('sessions:list', limit),
-  predictSession: sessionId => ipcRenderer.invoke('session:predict', sessionId),
-  startMonitor: sessionId => ipcRenderer.invoke('monitor:start', sessionId),
-  stopMonitor: () => ipcRenderer.invoke('monitor:stop'),
+  getSessionReport: sessionId => ipcRenderer.invoke('session:report', sessionId),
   savePdfReport: report => ipcRenderer.invoke('report:pdf', report),
-  onMonitorEvent: callback => {
+  onLiveEvent: callback => {
     const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('monitor:event', listener);
-    return () => ipcRenderer.removeListener('monitor:event', listener);
+    ipcRenderer.on('live:event', listener);
+    return () => ipcRenderer.removeListener('live:event', listener);
   },
-  onMonitorExit: callback => {
+  onLiveExit: callback => {
     const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('monitor:exit', listener);
-    return () => ipcRenderer.removeListener('monitor:exit', listener);
+    ipcRenderer.on('live:exit', listener);
+    return () => ipcRenderer.removeListener('live:exit', listener);
   }
 });

@@ -1,63 +1,60 @@
-# Device 2 — EEG session analysis desktop app
+# NeuroMonitor — combined EEG desktop application
 
-This Electron desktop UI lists active and completed EEG sessions with stored
-sample chunks in Aura. Select a participant/session and start processing; the
-Python service polls for the next one-second (500-sample) chunk, beginning at
-chunk zero so data stored before Device 2 starts is not skipped. It validates
-channel mapping, sample count, finite values, and timestamps before extracting
-training-compatible features and running the saved SVM. Model windows are four
-seconds with a two-second step, so a new prediction normally appears every two
-seconds after the initial four-second warm-up.
+The primary Electron app now lives in `apps/EEGRT/`. This earlier copy is
+retained to preserve project history; make future changes in `EEGRT/`.
 
-The UI shows participant details read from the session, stacked EEG traces,
-window-level model stress-score trend, prediction history, and a stop-and-
-summarize action. Stopping Device 2 does not stop Device 1 recording. A PDF
-report can be saved after processing stops. Music automation is intentionally
-not implemented; it remains a separately validated later module.
+This Electron app replaces the earlier two-computer relay workflow. Run it on
+the computer that can see EEGStudio's LSL Outlet. It discovers the outlet,
+collects participant details, receives the stream directly, applies the
+existing trained SVM pipeline, displays the incoming traces and estimates, and
+saves session/results metadata to Neo4j Aura.
+
+Raw EEG samples are recorded incrementally to local CSV files. The app does
+not send raw signal chunks to Aura. Neo4j stores participant identity, session
+metadata, prediction windows, and final session summary. The Electron app can
+generate a PDF report from a completed session or retrieve saved results for a
+previous session.
 
 ## Setup
 
-Install Node.js and Electron on Device 2, then copy the repository and its
-trained artifacts to that computer. The project Python environment must have
-the packages in root `requirements.txt`; Device 2 also needs a local `.env`
-with its own Aura connection configuration. Never copy credentials through
-source control or package them in the Electron app.
+On the EEG acquisition computer:
+
+1. Start the SmartBCI x24 and EEGStudio.
+2. Start EEGStudio's LSL Outlet.
+3. Configure the project Python environment and `.env` with the Aura
+   connection settings. The `.env` file must stay local and untracked.
+4. Install the Python dependencies and Electron dependencies if needed.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+cd C:\path\to\Real-Time-EEG-Stress-Detection
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+Copy-Item .env.example .env   # only if this machine does not already have .env
 notepad .env
-cd apps/device2-dashboard
-npm install
+cd apps\device2-dashboard
+npm install                  # only for initial setup
+$env:EEG_PYTHON = (Resolve-Path ..\..\.venv\Scripts\python.exe).Path
 npm start
 ```
 
-The desktop app launches Python as a child process from the repository root.
-Set `EEG_PYTHON` to the desired Python executable if `python` is not on PATH.
+If using the system Python instead of `.venv`, omit the `EEG_PYTHON` assignment.
+The Python executable used by Electron must have the same installed dependencies
+and must be able to read the project `.env`.
 
-## Data and interpretation
+## Session workflow
 
-The app uses `src/dashboard/device2_service.py`, `Neo4jReader`,
-`RollingWindowBuffer`, and `TrainedModel`; feature definitions are not copied
-into the UI. Every displayed class is an estimate of the recorded experimental
-baseline/stress condition, not a clinical stress diagnosis. The current model
-has preliminary participant-wise validation only and no external validation.
-Signals are accepted only when the stored channel set/order can be mapped and
-the saved sample rate is compatible with the trained 500 Hz configuration.
+1. Refresh streams and explicitly select the EEGStudio EEG outlet.
+2. Enter a participant ID and full name.
+3. Start the live session. The app validates connected channel labels and the
+   stream sampling rate against the trained model before predicting.
+4. Stop the session to flush local recording files and save the Aura summary.
+5. Download the report, or retrieve a saved report from the session archive.
 
-If a session contains stored samples but its electrode labels are missing or
-cannot be mapped, Device 2 still retrieves and graphs every stored channel
-using generic channel names. It explicitly blocks feature extraction and model
-predictions in that case; channel positions are never guessed. The session list
-shows each session's recorded source so CSV replay sessions are distinguishable
-from the reported Mitsar source. The Devices must use the same Aura database
-configuration for Device 2 to see Device 1 sessions.
+The current model requires the exact 19 trained EEG channels and 500 Hz. If
+EEGStudio publishes blank labels or does not expose a verified mapping, the app
+will block inference rather than guess channels. Verify the inlet metadata and
+electrode ordering before relying on predictions. Signal units and EEGStudio
+filtering/raw-vs-processed behavior remain unverified.
 
-The existing bounded prototype stores up to the requested number of raw
-seconds in Neo4j. Device 2 refuses a session when the stored sample count and
-retrieved chunks disagree. It does not fill missing samples or resample.
-For a 10-20 minute run, configure Device 1's `--db-raw-seconds` to 600-1200
-seconds. The stress-score graph shows the SVM's uncalibrated model output; it
-must not be interpreted as a clinical probability or diagnosis.
+The predictions estimate recorded baseline/stress experimental conditions.
+They are preliminary and are not clinical diagnoses. Music control is not
+connected.

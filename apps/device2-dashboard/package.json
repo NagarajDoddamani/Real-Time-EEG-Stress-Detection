@@ -1,8 +1,8 @@
 {
-  "name": "eeg-device2-analysis-dashboard",
+  "name": "neuromonitor-eeg-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron interface for stored EEG session retrieval and model inference",
+  "description": "Combined Electron application for live EEG acquisition, inference, and session reports",
   "main": "main.js",
   "scripts": {
     "start": "electron ."

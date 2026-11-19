@@ -1,2 +1,3 @@
-Set-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..'))
-python -m src.acquisition.stream_monitor_ui
+$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+Set-Location (Join-Path $projectRoot 'apps\EEGRT')
+npm start

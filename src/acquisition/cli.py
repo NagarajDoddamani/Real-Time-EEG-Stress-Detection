@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import logging
 import time
@@ -48,6 +49,12 @@ def print_streams(streams: list[Any]) -> None:
             print("    This is a recorded CSV replay stream, not live EEG hardware.")
 
 
+def _emit_json(enabled: bool, event_type: str, **payload: Any) -> None:
+    if enabled:
+        print(json.dumps({"type": event_type, **payload}, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False), flush=True)
+
+
 def choose_stream(streams: list[Any], index: int | None, stream_uid: str | None = None) -> Any:
     if not streams:
         raise RuntimeError("no LSL streams available")
@@ -79,6 +86,9 @@ def connect(info: Any, timeout: float) -> Any:
 
 
 def _run(args: argparse.Namespace, infer: bool) -> int:
+    json_events = bool(getattr(args, "json_events", False))
+    inference_enabled = infer
+    inference_block_reason = None
     config = json.loads(args.config.read_text(encoding="utf-8"))
     participant_id = (getattr(args, "participant_id", None) or "").strip()
     participant_name = (getattr(args, "participant_name", None) or "").strip()
@@ -92,15 +102,24 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     if participant_name:
         participant_properties["participant_name"] = participant_name
     streams = resolve_streams(args.resolve_wait)
-    print_streams(streams)
+    if not json_events:
+        print_streams(streams)
     info = choose_stream(streams, args.stream_index, getattr(args, "stream_uid", None))
     if infer:
-        model = TrainedModel(args.model, args.model_metadata, args.config)
-        expected = float(model.metadata["sampling_frequency_hz"])
-        window_samples = int(model.metadata["window_samples"])
-        step_samples = int(model.metadata["window_step_samples"])
-        model_indices = []
-        buffer = None
+        try:
+            model = TrainedModel(args.model, args.model_metadata, args.config)
+            expected = float(model.metadata["sampling_frequency_hz"])
+            window_samples = int(model.metadata["window_samples"])
+            step_samples = int(model.metadata["window_step_samples"])
+            model_indices = []
+            buffer = None
+        except Exception as exc:
+            if not getattr(args, "allow_unmapped", False):
+                raise
+            model = None; expected = None; window_samples = 0; step_samples = 0
+            model_indices = []; buffer = None
+            inference_enabled = False
+            inference_block_reason = f"Saved model could not be loaded: {exc}"
     else:
         model = None; model_indices = []; expected = None; buffer = None
 
@@ -119,13 +138,22 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     try:
         if meta.channel_count != len(meta.channel_labels):
             raise RuntimeError("stream metadata channel count and labels differ; refusing to record or infer")
-        if infer:
-            channel_map = map_eeg_channels(meta.channel_labels, model.channels)
-            if meta.nominal_srate > 0 and not np.isclose(meta.nominal_srate, expected, rtol=args.rate_tolerance):
-                raise RuntimeError(f"nominal stream rate {meta.nominal_srate:g} Hz is incompatible with model rate {expected:g} Hz")
-            model_indices = [channel_map[channel] for channel in model.channels]
-            buffer = RollingWindowBuffer(len(model.channels), window_samples, step_samples,
-                                         expected_rate_hz=expected, rate_tolerance=args.rate_tolerance)
+        if inference_enabled:
+            try:
+                channel_map = map_eeg_channels(meta.channel_labels, model.channels)
+                if meta.nominal_srate <= 0 or not np.isclose(meta.nominal_srate, expected, rtol=args.rate_tolerance):
+                    raise ValueError(f"nominal stream rate {meta.nominal_srate:g} Hz is incompatible with model rate {expected:g} Hz")
+                model_indices = [channel_map[channel] for channel in model.channels]
+                buffer = RollingWindowBuffer(len(model.channels), window_samples, step_samples,
+                                             expected_rate_hz=expected, rate_tolerance=args.rate_tolerance)
+            except Exception as exc:
+                if not getattr(args, "allow_unmapped", False):
+                    raise
+                inference_enabled = False
+                inference_block_reason = str(exc)
+                model = None
+                model_indices = list(range(meta.channel_count))
+                buffer = None
         else:
             model_indices = list(range(meta.channel_count))
     except Exception:
@@ -133,23 +161,6 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         if neo4j:
             neo4j.close()
         raise
-    db_raw_seconds = float(getattr(args, "db_raw_seconds", 0.0))
-    if db_raw_seconds < 0:
-        inlet.close_stream()
-        if neo4j: neo4j.close()
-        raise ValueError("--db-raw-seconds cannot be negative")
-    db_raw_sample_limit = 0
-    db_storage_rate = None
-    if db_raw_seconds > 0:
-        if not neo4j:
-            inlet.close_stream()
-            raise ValueError("--db-raw-seconds requires --neo4j")
-        storage_rate = expected or meta.nominal_srate
-        if storage_rate <= 0 or not np.isclose(storage_rate, 500.0, rtol=args.rate_tolerance):
-            inlet.close_stream(); neo4j.close()
-            raise ValueError("bounded raw-to-DB test requires an advertised/model-compatible 500 Hz stream")
-        db_storage_rate = float(storage_rate)
-        db_raw_sample_limit = int(round(storage_rate * db_raw_seconds))
     event_inlet = None
     event_meta = None
     if args.event_stream_index is not None:
@@ -185,24 +196,36 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     interruption_count = 0
     previous_chunk_last: float | None = None
     window_count = 0
-    raw_chunk_collector = None
-    if db_raw_sample_limit:
-        from src.storage.neo4j_store import SampleChunkCollector
-        raw_chunk_collector = SampleChunkCollector(neo4j, session_id, meta.channel_labels,
-            db_storage_rate, db_raw_sample_limit, chunk_samples=int(round(db_storage_rate)))
+    prediction_history: list[dict[str, Any]] = []
     session_record = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "properties": {"started_at_utc": start_wall,
         **participant_properties,
         "stream_name": meta.name, "stream_type": meta.stream_type, "source_id": meta.source_id,
         "channel_count": meta.channel_count, "channel_labels": meta.channel_labels,
         "nominal_sampling_rate_hz": meta.nominal_srate, "channel_format": meta.channel_format,
+        "model_algorithm": model.metadata.get("model_algorithm") if model else None,
+        "model_validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy") if model else None,
+        "model_validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro") if model else None,
+        "channel_labels_used": model.channels if model else [],
+        "prediction_enabled": inference_enabled,
+        "inference_block_reason": inference_block_reason,
         "signal_units": "unknown", "device": ("simulated LSL test publisher; not Mitsar hardware"
             if meta.source_id.startswith("SIMULATED_") else "recorded CSV replay; not live hardware"
             if meta.source_id.startswith("RECORDED_CSV_") else "Mitsar SmartBCI x24 (reported; LSL source unverified)"),
         "eeg_csv_path": str(recorder.csv_path)}}
     if neo4j:
         neo4j.submit_session(session_record)
-    print(f"Session ID: {session_id}", flush=True)
+    _emit_json(json_events, "session_started", session={"session_id": session_id,
+        **participant_properties, "stream_name": meta.name, "stream_type": meta.stream_type,
+        "source_id": meta.source_id, "channel_count": meta.channel_count,
+        "channel_labels": meta.channel_labels, "nominal_sampling_rate_hz": meta.nominal_srate,
+        "started_at_utc": start_wall, "device": session_record["properties"]["device"]},
+        inference_enabled=inference_enabled, inference_block_reason=inference_block_reason,
+        model={"algorithm": model.metadata.get("model_algorithm"),
+               "validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy"),
+               "validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro")} if model else None)
+    if not json_events:
+        print(f"Session ID: {session_id}", flush=True)
     base_metadata = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "stream_uid": meta.stream_id, "channel_count": meta.channel_count,
         **participant_properties,
@@ -219,17 +242,27 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         "event_stream": ({"name": event_meta.name, "type": event_meta.stream_type,
             "source_id": event_meta.source_id, "channel_count": event_meta.channel_count,
             "channel_labels": event_meta.channel_labels} if event_meta else None),
-        "prediction_enabled": infer, "unit_warning": "Physical scale and raw/processed status are unverified."}
+        "prediction_enabled": inference_enabled,
+        "inference_block_reason": inference_block_reason,
+        "unit_warning": "Physical scale and raw/processed status are unverified."}
     started = time.monotonic()
-    print(f"Connected to {meta.name!r}; recording to {recorder.csv_path}. Ctrl+C to stop safely.")
+    if not json_events:
+        print(f"Connected to {meta.name!r}; recording to {recorder.csv_path}. Ctrl+C to stop safely.")
+    else:
+        _emit_json(True, "status", message="Connected to EEG stream; live inference is running.")
     session_logger.info("Connected to stream=%s source_id=%s channels=%d nominal_rate=%s",
                         meta.name, meta.source_id, meta.channel_count, meta.nominal_srate)
-    if model:
+    if model and not json_events:
         print("WARNING: exploratory condition predictions only; model has no external validation and signal units/raw status remain unverified.")
+    elif model:
+        _emit_json(True, "notice", message="Experimental-condition estimates only; not a clinical diagnosis. Signal units and raw/processed status remain unverified.")
+    elif inference_block_reason and json_events:
+        _emit_json(True, "notice", message=f"Raw acquisition continues, but predictions are disabled: {inference_block_reason}")
     try:
         while args.duration is None or time.monotonic() - started < args.duration:
             if args.stop_file and args.stop_file.is_file():
-                print("Stop requested by Device 1 UI; flushing recording.")
+                if not json_events:
+                    print("Stop requested by UI; flushing recording.")
                 break
             chunk, timestamps = inlet.pull_chunk(timeout=0.25, max_samples=512)
             if not chunk:
@@ -251,8 +284,16 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                 timestamp_count += len(stamp_values)
                 timestamp_history.extend(stamp_values)
             recorder.write_samples(chunk, stamp_values)
-            if raw_chunk_collector:
-                raw_chunk_collector.add(chunk, stamp_values, recorder.sample_count - len(chunk))
+            if json_events:
+                try:
+                    display_values_valid = np.isfinite(np.asarray(chunk, dtype=float)).all() and np.isfinite(stamp_values).all()
+                except (TypeError, ValueError):
+                    display_values_valid = False
+                if display_values_valid:
+                    _emit_json(True, "sample_chunk", first_sample_index=recorder.sample_count - len(chunk),
+                               sample_count=len(chunk), samples=chunk, timestamps=stamp_values)
+                else:
+                    _emit_json(True, "signal_quality_warning", message="Non-numeric or non-finite sample/timestamp chunk received; preserved locally, not drawn or used for model inference.")
             if event_inlet is not None:
                 event_samples, event_timestamps = event_inlet.pull_chunk(timeout=0.0, max_samples=256)
                 if event_samples:
@@ -262,21 +303,43 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                             neo4j.submit_event({"session_id": session_id,
                                 "event_id": f"{session_id}:{event_timestamp}:{event_sample}",
                                 "timestamp": float(event_timestamp), "values": [str(v) for v in event_sample]})
-            if not infer:
+            if not inference_enabled:
                 continue
             eeg = np.asarray(chunk, dtype=float)[:, model_indices]
-            windows = buffer.push(eeg, stamp_values)
+            try:
+                windows = buffer.push(eeg, stamp_values)
+            except ValueError as exc:
+                if not getattr(args, "allow_unmapped", False):
+                    raise
+                inference_enabled = False
+                inference_block_reason = f"Incoming window validation failed: {exc}"
+                session_record["properties"].update({"prediction_enabled": False,
+                    "inference_block_reason": inference_block_reason})
+                _emit_json(json_events, "inference_blocked", reason=inference_block_reason)
+                continue
             for signal_window, t0, t1, start_sample in windows:
                 rate_result = estimate_rate(timestamp_history, meta.nominal_srate, expected, args.rate_tolerance)
                 if not rate_result["compatible"]:
-                    raise RuntimeError(f"timestamp-derived rate is not compatible with model: {rate_result}")
+                    if not getattr(args, "allow_unmapped", False):
+                        raise RuntimeError(f"timestamp-derived rate is not compatible with model: {rate_result}")
+                    inference_enabled = False
+                    inference_block_reason = f"Timestamp-derived sampling rate is incompatible with the trained model: {rate_result}"
+                    session_record["properties"].update({"prediction_enabled": False,
+                        "inference_block_reason": inference_block_reason})
+                    _emit_json(json_events, "inference_blocked", reason=inference_block_reason)
+                    break
                 window_count += 1
                 result = model.predict_window(signal_window, t0, t1, window_count)
                 result["window_start_sample"] = start_sample
+                result["elapsed_seconds"] = (start_sample + window_samples) / expected
                 recorder.write_prediction(result)
-                print(f"window {window_count}: {result['prediction_text']} "
-                      f"(baseline={result.get('baseline_probability', float('nan')):.3f}, "
-                      f"stress={result.get('stress_probability', float('nan')):.3f})")
+                prediction_history.append(result)
+                if json_events:
+                    _emit_json(True, "prediction", prediction=result)
+                else:
+                    print(f"window {window_count}: {result['prediction_text']} "
+                          f"(baseline={result.get('baseline_probability', float('nan')):.3f}, "
+                          f"stress={result.get('stress_probability', float('nan')):.3f})")
                 session_logger.info("window=%d prediction=%s baseline_probability=%s stress_probability=%s",
                     window_count, result["predicted_condition"], result.get("baseline_probability"),
                     result.get("stress_probability"))
@@ -284,13 +347,19 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                     neo4j.submit_prediction({"session_id": session_id,
                         "prediction_id": f"{session_id}:{window_count}", "properties": result})
     except KeyboardInterrupt:
-        print("Stop requested; flushing local recording.")
+        if not json_events:
+            print("Stop requested; flushing local recording.")
     finally:
         end_wall = datetime.now(timezone.utc).isoformat()
-        if raw_chunk_collector:
-            raw_chunk_collector.flush(recorder.sample_count - len(raw_chunk_collector.samples))
         session_logger.info("Stopping session; samples=%d windows=%d", recorder.sample_count, window_count)
         rate_result = estimate_rate(timestamp_history, meta.nominal_srate, expected or 0.0, args.rate_tolerance)
+        stress_scores = [float(row["stress_probability"]) for row in prediction_history
+                         if row.get("stress_probability") is not None]
+        stress_windows = sum(row.get("predicted_condition") == "stress" for row in prediction_history)
+        baseline_windows = sum(row.get("predicted_condition") == "baseline" for row in prediction_history)
+        majority_condition = ("stress" if stress_windows > baseline_windows else
+                              "baseline" if baseline_windows > stress_windows else "tie_or_no_windows")
+        average_stress_score = float(np.mean(stress_scores)) if stress_scores else None
         final_metadata = {**base_metadata, "recording_end_utc": end_wall,
             "sample_count": recorder.sample_count,
             "timestamp_count": timestamp_count,
@@ -298,11 +367,10 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             "timestamp_diagnostics_sample_count": len(timestamp_history),
             "empty_chunk_count": empty_chunk_count, "detected_chunk_interruption_count": interruption_count,
             "event_sample_count": recorder.event_count,
-            "raw_eeg_sample_limit_for_db": db_raw_sample_limit,
-            "raw_eeg_samples_queued_for_db": raw_chunk_collector.samples_queued if raw_chunk_collector else 0,
-            "raw_eeg_chunks_queued_for_db": raw_chunk_collector.chunk_index if raw_chunk_collector else 0,
             "sampling_rate_validation": rate_result, "window_count": window_count,
             "model_algorithm": model.metadata.get("model_algorithm") if model else None,
+            "prediction_enabled": inference_enabled,
+            "inference_block_reason": inference_block_reason,
             "model_cv_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy") if model else None,
             "model_cv_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro") if model else None,
             "prediction_interpretation": "experimental condition, not clinical diagnosis" if model else None,
@@ -320,9 +388,18 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         if neo4j:
             session_record["properties"].update({"ended_at_utc": end_wall,
                 "sample_count": recorder.sample_count, "window_count": window_count,
-                "raw_eeg_sample_count": raw_chunk_collector.samples_queued if raw_chunk_collector else 0,
-                "raw_eeg_chunk_count": raw_chunk_collector.chunk_index if raw_chunk_collector else 0,
                 "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
+                "model_algorithm": model.metadata.get("model_algorithm") if model else None,
+                "model_validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy") if model else None,
+                "model_validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro") if model else None,
+                "channel_labels_used": model.channels if model else [],
+                "average_stress_score": average_stress_score,
+                "stress_window_count": int(stress_windows),
+                "baseline_window_count": int(baseline_windows),
+                "majority_window_condition": majority_condition,
+                "prediction_enabled": inference_enabled,
+                "inference_block_reason": inference_block_reason,
+                "interpretation": "Experimental-condition estimates; not a clinical diagnosis.",
                 "metadata_json_path": str(recorder.metadata_path),
                 "predictions_csv_path": str(recorder.predictions_path),
                 "events_csv_path": str(recorder.events_path) if event_inlet else None,
@@ -330,11 +407,35 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             try:
                 neo4j.submit_session(session_record)
                 neo4j.close()
+                database_errors = list(neo4j.errors)
             except Exception:
+                database_errors = ["Failed to flush final session metadata to Neo4j."]
                 logging.exception("Neo4j finalization failed; local CSV and JSON have been flushed")
-        print(f"Saved {recorder.sample_count} samples, {window_count} predictions; observed rate="
-              f"{rate_result['observed_rate_hz']} Hz; files: {recorder.csv_path}, {recorder.metadata_path}, {recorder.predictions_path}")
-        print(f"Session ID: {session_id}")
+        else:
+            database_errors = ["Neo4j storage was not enabled."]
+        summary = {"sample_count": recorder.sample_count, "window_count": window_count,
+            "duration_seconds": (last_timestamp - first_timestamp) if first_timestamp is not None and last_timestamp is not None else 0,
+            "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
+            "stress_window_count": int(stress_windows), "baseline_window_count": int(baseline_windows),
+            "average_stress_score": average_stress_score,
+            "majority_window_condition": majority_condition,
+            "database_saved": bool(neo4j and not database_errors), "database_errors": database_errors,
+            "local_recording": str(recorder.csv_path), "predictions_file": str(recorder.predictions_path)}
+        if json_events:
+            _emit_json(True, "session_stopped", session={"session_id": session_id,
+                **participant_properties, "stream_name": meta.name, "channel_count": meta.channel_count,
+                "channel_labels": meta.channel_labels, "channel_labels_used": model.channels if model else [],
+                "nominal_sampling_rate_hz": meta.nominal_srate, "started_at_utc": start_wall,
+                "ended_at_utc": end_wall}, summary=summary,
+                inference_enabled=inference_enabled, inference_block_reason=inference_block_reason,
+                model={"algorithm": model.metadata.get("model_algorithm"),
+                    "validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy"),
+                    "validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro")} if model else None,
+                predictions=prediction_history)
+        else:
+            print(f"Saved {recorder.sample_count} samples, {window_count} predictions; observed rate="
+                  f"{rate_result['observed_rate_hz']} Hz; files: {recorder.csv_path}, {recorder.metadata_path}, {recorder.predictions_path}")
+            print(f"Session ID: {session_id}")
         session_logger.removeHandler(file_handler)
         file_handler.close()
     return 0
@@ -345,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     discover = sub.add_parser("discover", help="list all visible LSL streams")
     discover.add_argument("--resolve-wait", type=float, default=2.0)
+    discover.add_argument("--json", action="store_true", help="emit stream metadata as JSON")
     inspect = sub.add_parser("inspect", help="inspect metadata for a selected stream")
     inspect.add_argument("--stream-index", type=int, required=True)
     inspect.add_argument("--resolve-wait", type=float, default=2.0)
@@ -352,10 +454,6 @@ def main(argv: list[str] | None = None) -> int:
     db_list.add_argument("--limit", type=int, default=20)
     db_show = sub.add_parser("db-show", help="retrieve one session and its predictions/events from Neo4j")
     db_show.add_argument("--session-id", required=True)
-    db_samples = sub.add_parser("db-samples", help="retrieve at most a requested duration of stored raw EEG chunks")
-    db_samples.add_argument("--session-id", required=True)
-    db_samples.add_argument("--duration-seconds", type=float, default=60.0)
-    db_samples.add_argument("--output", type=Path)
     for name, help_text in (("record", "record original LSL samples locally"),
                             ("predict", "record and run trained-model window predictions"),
                             ("live", "stream predictions continuously")):
@@ -371,20 +469,31 @@ def main(argv: list[str] | None = None) -> int:
                          help="stop and flush if no EEG samples arrive within this many seconds")
         cmd.add_argument("--rate-tolerance", type=float, default=0.02)
         cmd.add_argument("--participant-id", help="study participant code stored with the session")
-        cmd.add_argument("--participant-name", help="optional display label shown on Device 2")
+        cmd.add_argument("--participant-name", help="participant name saved with the session for the desktop archive")
         cmd.add_argument("--stop-file", type=Path,
-                         help="stop recording gracefully when this file appears; used by the Device 1 UI")
-        cmd.add_argument("--db-raw-seconds", type=float, default=0.0,
-                         help="store only this initial duration of raw stream samples in Neo4j chunks (requires --neo4j)")
+                         help="stop recording gracefully when this file appears; used by the Electron desktop UI")
         cmd.add_argument("--output", type=Path, default=ROOT / "data" / "live")
         cmd.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
         cmd.add_argument("--model", type=Path, default=DEFAULT_MODEL)
         cmd.add_argument("--model-metadata", type=Path, default=DEFAULT_MODEL_METADATA)
         cmd.add_argument("--neo4j", action="store_true", help="store session and predictions in Neo4j; requires NEO4J_* environment")
+        cmd.add_argument("--json-events", action="store_true", help="emit JSON events for the Electron live interface")
+        cmd.add_argument("--allow-unmapped", action="store_true",
+                         help="continue raw local acquisition but disable inference when model input validation fails")
     args = parser.parse_args(argv)
     try:
         if args.command == "discover":
-            print_streams(resolve_streams(args.resolve_wait)); return 0
+            streams = resolve_streams(args.resolve_wait)
+            if args.json:
+                model_config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+                print(json.dumps({"ok": True,
+                    "model_input": {"channels": model_config["eeg_channels"],
+                        "sampling_frequency_hz": model_config["sampling_frequency_hz"]},
+                    "streams": [asdict(extract_stream_metadata(info)) for info in streams]},
+                    separators=(",", ":"), ensure_ascii=False), flush=True)
+            else:
+                print_streams(streams)
+            return 0
         if args.command == "inspect":
             streams = resolve_streams(args.resolve_wait); print_streams(streams)
             selected = choose_stream(streams, args.stream_index)
@@ -394,35 +503,14 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 inlet.close_stream()
             return 0
-        if args.command in {"db-list", "db-show", "db-samples"}:
+        if args.command in {"db-list", "db-show"}:
             from src.storage.neo4j_store import Neo4jReader
             reader = Neo4jReader()
             try:
                 if args.command == "db-list":
                     result = reader.list_sessions(args.limit)
-                elif args.command == "db-show":
-                    result = reader.get_session(args.session_id)
                 else:
-                    if args.duration_seconds <= 0:
-                        raise ValueError("duration-seconds must be positive")
-                    session = reader.get_session(args.session_id)
-                    if session is None:
-                        result = None
-                    else:
-                        stored_rate = session["session"].get("observed_sampling_rate_hz") or 500.0
-                        max_samples = int(round(args.duration_seconds * float(stored_rate)))
-                        labels, samples, timestamps, actual_rate = reader.export_sample_chunks(args.session_id, max_samples)
-                        output_path = args.output or ROOT / "data" / "live" / "retrieved" / f"{args.session_id}_up_to_{args.duration_seconds:g}s.csv"
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-                        import csv
-                        with output_path.open("w", encoding="utf-8", newline="") as stream:
-                            writer = csv.writer(stream, lineterminator="\n")
-                            writer.writerow(["sample_index", "lsl_timestamp", *labels])
-                            for index, (row, timestamp) in enumerate(zip(samples, timestamps)):
-                                writer.writerow([index, timestamp, *row])
-                        result = {"session_id": args.session_id, "output_csv": str(output_path),
-                            "samples_retrieved": len(samples), "duration_seconds_at_recorded_rate": len(samples) / actual_rate,
-                            "sampling_rate_hz": actual_rate, "channel_labels": labels}
+                    result = reader.get_session_report(args.session_id)
             finally:
                 reader.close()
             if result is None:
@@ -432,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return _run(args, infer=args.command in {"predict", "live"})
     except Exception as exc:
+        if getattr(args, "json_events", False):
+            print(json.dumps({"type": "error", "error": str(exc)}, separators=(",", ":")), flush=True)
+            return 2
         parser.exit(2, f"Acquisition stopped: {exc}\n")
 
 

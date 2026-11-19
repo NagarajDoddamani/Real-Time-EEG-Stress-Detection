@@ -1,25 +1,25 @@
-# Two-device project layout
+# EEG desktop application
+
+The Electron application in `EEGRT/` is the primary combined live system:
 
 ```text
-Device 1 (EEG acquisition computer)
-  EEGStudio LSL Outlet -> Python Tkinter stream monitor (all outlets visible)
-    -> src.acquisition.cli record + participant ID/display label
-    -> local full CSV/JSON + one-second (500-sample) Aura chunks
-
-Device 2 (analysis computer)
-  Electron desktop UI
-    -> select participant/session from Aura
-    -> src.dashboard.device2_service polls each second from chunk zero
-    -> validate channel names/order, timestamps and sample counts
-    -> existing rolling 4 s windows / 2 s step / feature extractor / SVM
-    -> live EEG traces + model-score trend + manual stop + PDF summary
+EEGStudio LSL Outlet
+  -> Electron stream discovery and participant form
+  -> Python LSL receiver and local raw recording
+  -> existing validated channel mapping, rolling windows, feature extraction, SVM
+  -> live waveform and experimental-condition estimates in Electron
+  -> Neo4j Aura participant, session summary, and prediction results
+  -> downloadable PDF report
 ```
 
-Both computers need a local project checkout, Python environment, and their
-own untracked `.env` containing access to the same Aura instance. Device 1
-needs EEGStudio and the LSL runtime. Device 2 needs Node.js/Electron and the
-Python inference dependencies. The source tree and trained artifact are shared
-project code; acquisition and analysis entry points are separated by app.
+Raw EEG is written to local recording files and is not sent to Neo4j. Aura is
+used for participant/session metadata and prediction results. The former
+`device1-recorder/` scripts remain as standalone diagnostics and should not be
+used as a separate production workflow when running the combined app.
 
-Music playback and music-impact experiments are not implemented. Keep them as
-a future module triggered only after the prediction flow is validated.
+The Electron app requires the repository Python environment, the trained model
+artifacts, and a local `.env` configured for Aura. Start it with `npm start`
+from `apps/EEGRT/`. The earlier `device2-dashboard/` copy is retained for
+continuity; make future UI changes in `EEGRT/`.
+
+Music playback and music-impact analysis remain a later development phase.
