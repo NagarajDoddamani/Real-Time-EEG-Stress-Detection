@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import importlib.metadata
 import math
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,6 +141,7 @@ class TrainedModel:
         import joblib
         self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         self.config = json.loads(config_path.read_text(encoding="utf-8"))
+        self._validate_runtime_versions()
         self.model = joblib.load(model_path)
         self.channels = list(self.metadata["channel_names_and_order"])
         self.feature_names = list(self.metadata["feature_names_and_order"])
@@ -150,6 +153,36 @@ class TrainedModel:
             raise ValueError("model feature count differs from model metadata")
         if hasattr(self.model, "feature_names_in_") and list(self.model.feature_names_in_) != self.feature_names:
             raise ValueError("model feature names/order differ from model metadata")
+
+    def _validate_runtime_versions(self) -> None:
+        """Refuse to unpickle an artifact under libraries unlike its training runtime."""
+        expected_python = str(self.metadata.get("python_version") or "")
+        actual_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        expected_python_pair = ".".join(expected_python.split(".")[:2])
+        mismatches = []
+        if expected_python_pair and expected_python_pair != actual_python:
+            mismatches.append(f"Python {expected_python_pair} required; current Python is {actual_python}")
+
+        expected_libraries = self.metadata.get("library_versions", {})
+        for distribution in ("numpy", "scipy", "scikit-learn", "joblib"):
+            expected = expected_libraries.get(distribution)
+            if not expected:
+                continue
+            try:
+                actual = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError:
+                actual = "not installed"
+            if actual != str(expected):
+                mismatches.append(f"{distribution} {expected} required; current version is {actual}")
+        if mismatches:
+            details = "; ".join(mismatches)
+            raise RuntimeError(
+                "Model runtime is incompatible with the saved artifact: " + details +
+                ". Create the EEGRT Python 3.10 environment with "
+                "`py -3.10 -m venv .venv` then "
+                "`.\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt`, "
+                "and restart the app."
+            )
 
     def predict_window(self, window: np.ndarray, start_timestamp: float, end_timestamp: float,
                        window_index: int) -> dict[str, Any]:

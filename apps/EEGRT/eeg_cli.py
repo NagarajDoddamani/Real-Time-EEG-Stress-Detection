@@ -94,8 +94,6 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     participant_name = (getattr(args, "participant_name", None) or "").strip()
     if len(participant_id) > 100 or len(participant_name) > 160:
         raise ValueError("participant ID must be <=100 characters and display name <=160 characters")
-    if getattr(args, "neo4j", False) and (not participant_id or not participant_name):
-        raise ValueError("Neo4j recording requires both --participant-id and --participant-name so Device 2 can identify the user")
     participant_properties = {}
     if participant_id:
         participant_properties["participant_id"] = participant_id
@@ -123,24 +121,24 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     else:
         model = None; model_indices = []; expected = None; buffer = None
 
-    neo4j = None
-    if args.neo4j:
-        from eeg_database import Neo4jWriter
-        neo4j = Neo4jWriter()
     try:
         inlet = connect(info, args.connect_timeout)
     except Exception:
-        if neo4j:
-            neo4j.close()
         raise
     # Resolver StreamInfo descriptions are partial; get channel metadata after connection.
     meta = extract_stream_metadata(inlet.info())
+    raw_channel_labels = list(meta.channel_labels)
     try:
-        if meta.channel_count != len(meta.channel_labels):
-            raise RuntimeError("stream metadata channel count and labels differ; refusing to record or infer")
+        if len(raw_channel_labels) > meta.channel_count:
+            raise RuntimeError("stream metadata has more channel labels than samples; refusing to record")
+        # Unlabelled streams can still be preserved and plotted using neutral column
+        # names. These generated names are never used to map model EEG channels.
+        channel_labels = [str(label or "").strip() for label in raw_channel_labels]
+        channel_labels.extend([""] * (meta.channel_count - len(channel_labels)))
+        channel_labels = [label or f"Ch {index + 1:02d}" for index, label in enumerate(channel_labels)]
         if inference_enabled:
             try:
-                channel_map = map_eeg_channels(meta.channel_labels, model.channels)
+                channel_map = map_eeg_channels(raw_channel_labels, model.channels)
                 if meta.nominal_srate <= 0 or not np.isclose(meta.nominal_srate, expected, rtol=args.rate_tolerance):
                     raise ValueError(f"nominal stream rate {meta.nominal_srate:g} Hz is incompatible with model rate {expected:g} Hz")
                 model_indices = [channel_map[channel] for channel in model.channels]
@@ -158,8 +156,6 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             model_indices = list(range(meta.channel_count))
     except Exception:
         inlet.close_stream()
-        if neo4j:
-            neo4j.close()
         raise
     event_inlet = None
     event_meta = None
@@ -167,18 +163,15 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         event_info = choose_stream(streams, args.event_stream_index)
         if extract_stream_metadata(event_info).stream_id == meta.stream_id:
             inlet.close_stream()
-            if neo4j: neo4j.close()
             raise ValueError("event stream must be selected separately from the EEG stream")
         try:
             event_inlet = connect(event_info, args.connect_timeout)
             event_meta = extract_stream_metadata(event_inlet.info())
         except Exception:
             inlet.close_stream()
-            if neo4j:
-                neo4j.close()
             raise
     session_id = str(uuid.uuid4())
-    recorder = LocalRecording(args.output, session_id, meta.channel_labels)
+    recorder = LocalRecording(args.output, session_id, channel_labels)
     log_path = args.output / "logs" / f"acquisition_{session_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     session_logger = logging.getLogger(f"eeg_acquisition.{session_id}")
@@ -201,7 +194,8 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
         "source_id": meta.source_id, "properties": {"started_at_utc": start_wall,
         **participant_properties,
         "stream_name": meta.name, "stream_type": meta.stream_type, "source_id": meta.source_id,
-        "channel_count": meta.channel_count, "channel_labels": meta.channel_labels,
+        "channel_count": meta.channel_count, "channel_labels": channel_labels,
+        "channel_labels_raw": raw_channel_labels,
         "nominal_sampling_rate_hz": meta.nominal_srate, "channel_format": meta.channel_format,
         "model_algorithm": model.metadata.get("model_algorithm") if model else None,
         "model_validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy") if model else None,
@@ -213,12 +207,11 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             if meta.source_id.startswith("SIMULATED_") else "recorded CSV replay; not live hardware"
             if meta.source_id.startswith("RECORDED_CSV_") else "Mitsar SmartBCI x24 (reported; LSL source unverified)"),
         "eeg_csv_path": str(recorder.csv_path)}}
-    if neo4j:
-        neo4j.submit_session(session_record)
     _emit_json(json_events, "session_started", session={"session_id": session_id,
         **participant_properties, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "channel_count": meta.channel_count,
-        "channel_labels": meta.channel_labels, "nominal_sampling_rate_hz": meta.nominal_srate,
+        "channel_labels": channel_labels, "channel_labels_raw": raw_channel_labels,
+        "nominal_sampling_rate_hz": meta.nominal_srate,
         "started_at_utc": start_wall, "device": session_record["properties"]["device"]},
         inference_enabled=inference_enabled, inference_block_reason=inference_block_reason,
         model={"algorithm": model.metadata.get("model_algorithm"),
@@ -229,7 +222,8 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
     base_metadata = {"session_id": session_id, "stream_name": meta.name, "stream_type": meta.stream_type,
         "source_id": meta.source_id, "stream_uid": meta.stream_id, "channel_count": meta.channel_count,
         **participant_properties,
-        "channel_labels_in_stream_order": meta.channel_labels, "nominal_sampling_rate_hz": meta.nominal_srate,
+        "channel_labels_in_stream_order": channel_labels, "channel_labels_raw": raw_channel_labels,
+        "nominal_sampling_rate_hz": meta.nominal_srate,
         "channel_format": meta.channel_format, "recording_start_utc": start_wall,
         "log_path": str(log_path),
         "signal_units": "unknown", "data_type": "preserved values as received; LSL channel format above",
@@ -298,11 +292,6 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                 event_samples, event_timestamps = event_inlet.pull_chunk(timeout=0.0, max_samples=256)
                 if event_samples:
                     recorder.write_events(event_samples, event_timestamps)
-                    if neo4j:
-                        for event_sample, event_timestamp in zip(event_samples, event_timestamps):
-                            neo4j.submit_event({"session_id": session_id,
-                                "event_id": f"{session_id}:{event_timestamp}:{event_sample}",
-                                "timestamp": float(event_timestamp), "values": [str(v) for v in event_sample]})
             if not inference_enabled:
                 continue
             eeg = np.asarray(chunk, dtype=float)[:, model_indices]
@@ -343,9 +332,6 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                 session_logger.info("window=%d prediction=%s baseline_probability=%s stress_probability=%s",
                     window_count, result["predicted_condition"], result.get("baseline_probability"),
                     result.get("stress_probability"))
-                if neo4j:
-                    neo4j.submit_prediction({"session_id": session_id,
-                        "prediction_id": f"{session_id}:{window_count}", "properties": result})
     except KeyboardInterrupt:
         if not json_events:
             print("Stop requested; flushing local recording.")
@@ -376,6 +362,13 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
             "prediction_interpretation": "experimental condition, not clinical diagnosis" if model else None,
             "event_stream_status": "recorded separately" if event_inlet else "not selected; inspect discover output and pass --event-stream-index if present",
             "events_csv_path": str(recorder.events_path) if event_inlet else None,
+            "predictions_csv_path": str(recorder.predictions_path),
+            "participant": participant_properties,
+            "summary": {"sample_count": recorder.sample_count, "window_count": window_count,
+                "recording_duration_seconds": (last_timestamp - first_timestamp) if first_timestamp is not None and last_timestamp is not None else 0,
+                "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
+                "stress_window_count": int(stress_windows), "baseline_window_count": int(baseline_windows),
+                "average_stress_score": average_stress_score, "majority_window_condition": majority_condition},
             "log_path": str(log_path)}
         recorder.write_metadata(final_metadata)
         recorder.close()
@@ -385,46 +378,26 @@ def _run(args: argparse.Namespace, infer: bool) -> int:
                 event_inlet.close_stream()
         except Exception:
             logging.exception("Error while closing LSL inlet")
-        if neo4j:
-            session_record["properties"].update({"ended_at_utc": end_wall,
-                "sample_count": recorder.sample_count, "window_count": window_count,
-                "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
-                "model_algorithm": model.metadata.get("model_algorithm") if model else None,
-                "model_validation_accuracy": model.metadata.get("selected_model_cv_metrics", {}).get("accuracy") if model else None,
-                "model_validation_macro_f1": model.metadata.get("selected_model_cv_metrics", {}).get("f1_macro") if model else None,
-                "channel_labels_used": model.channels if model else [],
-                "average_stress_score": average_stress_score,
-                "stress_window_count": int(stress_windows),
-                "baseline_window_count": int(baseline_windows),
-                "majority_window_condition": majority_condition,
-                "prediction_enabled": inference_enabled,
-                "inference_block_reason": inference_block_reason,
-                "interpretation": "Experimental-condition estimates; not a clinical diagnosis.",
-                "metadata_json_path": str(recorder.metadata_path),
-                "predictions_csv_path": str(recorder.predictions_path),
-                "events_csv_path": str(recorder.events_path) if event_inlet else None,
-                "log_path": str(log_path)})
-            try:
-                neo4j.submit_session(session_record)
-                neo4j.close()
-                database_errors = list(neo4j.errors)
-            except Exception:
-                database_errors = ["Failed to flush final session metadata to Neo4j."]
-                logging.exception("Neo4j finalization failed; local CSV and JSON have been flushed")
-        else:
-            database_errors = ["Neo4j storage was not enabled."]
+        final_metadata["recording_end_utc"] = end_wall
+        final_metadata["summary"] = {"sample_count": recorder.sample_count, "window_count": window_count,
+            "recording_duration_seconds": (last_timestamp - first_timestamp) if first_timestamp is not None and last_timestamp is not None else 0,
+            "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
+            "stress_window_count": int(stress_windows), "baseline_window_count": int(baseline_windows),
+            "average_stress_score": average_stress_score, "majority_window_condition": majority_condition}
+        recorder.write_metadata(final_metadata)
         summary = {"sample_count": recorder.sample_count, "window_count": window_count,
             "duration_seconds": (last_timestamp - first_timestamp) if first_timestamp is not None and last_timestamp is not None else 0,
             "observed_sampling_rate_hz": rate_result["observed_rate_hz"],
             "stress_window_count": int(stress_windows), "baseline_window_count": int(baseline_windows),
             "average_stress_score": average_stress_score,
             "majority_window_condition": majority_condition,
-            "database_saved": bool(neo4j and not database_errors), "database_errors": database_errors,
-            "local_recording": str(recorder.csv_path), "predictions_file": str(recorder.predictions_path)}
+            "local_recording": str(recorder.csv_path), "metadata_file": str(recorder.metadata_path),
+            "predictions_file": str(recorder.predictions_path)}
         if json_events:
             _emit_json(True, "session_stopped", session={"session_id": session_id,
                 **participant_properties, "stream_name": meta.name, "channel_count": meta.channel_count,
-                "channel_labels": meta.channel_labels, "channel_labels_used": model.channels if model else [],
+            "channel_labels": channel_labels, "channel_labels_raw": raw_channel_labels,
+            "channel_labels_used": model.channels if model else [],
                 "nominal_sampling_rate_hz": meta.nominal_srate, "started_at_utc": start_wall,
                 "ended_at_utc": end_wall}, summary=summary,
                 inference_enabled=inference_enabled, inference_block_reason=inference_block_reason,
@@ -450,10 +423,6 @@ def main(argv: list[str] | None = None) -> int:
     inspect = sub.add_parser("inspect", help="inspect metadata for a selected stream")
     inspect.add_argument("--stream-index", type=int, required=True)
     inspect.add_argument("--resolve-wait", type=float, default=2.0)
-    db_list = sub.add_parser("db-list", help="retrieve recent session records from Neo4j")
-    db_list.add_argument("--limit", type=int, default=20)
-    db_show = sub.add_parser("db-show", help="retrieve one session and its predictions/events from Neo4j")
-    db_show.add_argument("--session-id", required=True)
     for name, help_text in (("record", "record original LSL samples locally"),
                             ("predict", "record and run trained-model window predictions"),
                             ("live", "stream predictions continuously")):
@@ -476,7 +445,6 @@ def main(argv: list[str] | None = None) -> int:
         cmd.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
         cmd.add_argument("--model", type=Path, default=DEFAULT_MODEL)
         cmd.add_argument("--model-metadata", type=Path, default=DEFAULT_MODEL_METADATA)
-        cmd.add_argument("--neo4j", action="store_true", help="store session and predictions in Neo4j; requires NEO4J_* environment")
         cmd.add_argument("--json-events", action="store_true", help="emit JSON events for the Electron live interface")
         cmd.add_argument("--allow-unmapped", action="store_true",
                          help="continue raw local acquisition but disable inference when model input validation fails")
@@ -502,21 +470,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(extract_stream_metadata(inlet.info()).__dict__, indent=2))
             finally:
                 inlet.close_stream()
-            return 0
-        if args.command in {"db-list", "db-show"}:
-            from eeg_database import Neo4jReader
-            reader = Neo4jReader()
-            try:
-                if args.command == "db-list":
-                    result = reader.list_sessions(args.limit)
-                else:
-                    result = reader.get_session_report(args.session_id)
-            finally:
-                reader.close()
-            if result is None:
-                print("No matching session found.")
-                return 1
-            print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
             return 0
         return _run(args, infer=args.command in {"predict", "live"})
     except Exception as exc:

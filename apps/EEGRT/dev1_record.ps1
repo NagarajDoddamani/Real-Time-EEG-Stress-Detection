@@ -16,7 +16,7 @@ if (-not $ParticipantId -or -not $ParticipantName) { throw 'Participant ID and f
 
 $cliArgs = @((Join-Path $PSScriptRoot 'eeg_cli.py'), 'record', '--stream-index', "$StreamIndex",
     '--participant-id', $ParticipantId, '--participant-name', $ParticipantName,
-    '--neo4j', '--output', (Join-Path $PSScriptRoot 'data\live\dev1-recordings'))
+    '--output', (Join-Path $PSScriptRoot 'data\live\dev1-recordings'))
 if ($DurationSeconds -gt 0) { $cliArgs += @('--duration', "$DurationSeconds") }
 & $pythonExe @cliArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -3,4 +3,3 @@ scipy==1.15.3
 scikit-learn==1.7.2
 joblib==1.6.0
 pylsl>=1.16
-neo4j>=5.28

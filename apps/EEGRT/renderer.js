@@ -237,17 +237,11 @@ function handleLiveEvent(event) {
       predictions: event.predictions || predictions, model: event.model || null,
       model_algorithm: event.model?.algorithm || 'unknown' };
     restoreControls();
-    if (event.summary?.database_saved) {
-      document.getElementById('dbStatus').textContent = 'Aura saved'; setDot('dbDot', 'online');
-      setStatus(event.inference_enabled
-        ? `Session and results saved. ${event.summary.window_count} prediction windows; report is ready to download.`
-        : `Participant and session saved, but no predictions were produced. ${event.inference_block_reason || ''}`,
-        event.inference_enabled ? 'success' : 'error');
-    } else {
-      document.getElementById('dbStatus').textContent = 'Aura save failed'; setDot('dbDot', 'offline');
-      const detail = (event.summary?.database_errors || []).join('; ');
-      setStatus(`Local recording finished, but database save was not confirmed.${detail ? ` ${detail}` : ''}`, 'error');
-    }
+    document.getElementById('dbStatus').textContent = 'Local archive'; setDot('dbDot', 'online');
+    setStatus(event.summary?.window_count
+      ? `Session saved locally. ${event.summary.window_count} prediction windows; report is ready to download.`
+      : `Session saved locally. No predictions were produced.${event.inference_block_reason ? ` ${event.inference_block_reason}` : ''}`,
+      event.summary?.window_count ? 'success' : '');
     refreshSessions();
   }
 }
@@ -286,7 +280,7 @@ async function refreshSessions() {
   try {
     const result = await window.eegApp.listSessions(100);
     const sessions = result.sessions || [];
-    document.getElementById('dbStatus').textContent = sessions.length ? `Aura · ${sessions.length} sessions` : 'Aura connected · no sessions';
+    document.getElementById('dbStatus').textContent = `Local archive · ${sessions.length} sessions`;
     setDot('dbDot', 'online');
     if (!sessions.length) {
       ui.sessionList.innerHTML = '<div class="empty-state">No saved sessions yet. Completed sessions will appear here.</div>';
@@ -301,16 +295,16 @@ async function refreshSessions() {
       details.append(name, meta);
       const actions = document.createElement('div'); actions.className = 'archive-actions';
       const view = document.createElement('button'); view.className = 'button secondary'; view.textContent = 'View results';
-      view.disabled = !(session.prediction_count_already_stored > 0);
+      view.disabled = false;
       view.addEventListener('click', () => loadSavedSession(session.session_id));
       const download = document.createElement('button'); download.className = 'button secondary'; download.textContent = 'PDF';
-      download.disabled = !(session.prediction_count_already_stored > 0);
+      download.disabled = false;
       download.addEventListener('click', () => downloadSavedReport(session.session_id));
       actions.append(view, download);
       item.append(details, actions); return item;
     }));
   } catch (error) {
-    document.getElementById('dbStatus').textContent = 'Aura unavailable'; setDot('dbDot','offline');
+    document.getElementById('dbStatus').textContent = 'Local archive error'; setDot('dbDot','offline');
     const message = document.createElement('div'); message.className = 'empty-state'; message.textContent = error.message;
     ui.sessionList.replaceChildren(message);
   } finally { listings = false; ui.refreshSessions.disabled = false; }
@@ -339,7 +333,7 @@ async function saveReport(report) {
 }
 async function downloadSavedReport(sessionId) {
   try {
-    setStatus('Retrieving saved participant results from Aura…', 'working');
+    setStatus('Reading saved participant results from this computer…', 'working');
     const record = await window.eegApp.getSessionReport(sessionId);
     await saveReport(reportFromSaved(record));
   } catch (error) { setStatus(error.message, 'error'); }
@@ -348,7 +342,7 @@ async function downloadSavedReport(sessionId) {
 async function loadSavedSession(sessionId) {
   if (active) { setStatus('Stop the live session before loading an archived result.', 'error'); return; }
   try {
-    setStatus('Loading participant and prediction results from Aura…', 'working');
+    setStatus('Loading locally saved participant results…', 'working');
     const record = await window.eegApp.getSessionReport(sessionId);
     const report = reportFromSaved(record);
     const session = report.session;
@@ -374,7 +368,7 @@ async function loadSavedSession(sessionId) {
     if (last) renderPrediction(last);
     else document.getElementById('predictionList').innerHTML = '<div class="empty-state">No predictions were saved for this session.</div>';
     drawEeg(); drawStress();
-    ui.report.disabled = !predictions.length;
+    ui.report.disabled = false;
     setStatus(`Loaded ${predictions.length} saved prediction windows for ${session.participant_name || session.participant_id}. Raw waveform data is only available in the local recording.`, 'success');
   } catch (error) { setStatus(error.message, 'error'); }
 }

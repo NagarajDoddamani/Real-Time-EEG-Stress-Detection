@@ -23,7 +23,7 @@
         <div><p class="eyebrow">MITSAR EEG · LIVE WORKSPACE</p><h1>EEG session monitor</h1><p class="subtitle">Acquire, analyze, and review a participant session in one place.</p></div>
         <div class="top-actions">
           <div class="status-pill"><i id="lslDot"></i><span id="lslStatus">LSL not checked</span></div>
-          <div class="status-pill"><i id="dbDot"></i><span id="dbStatus">Aura not checked</span></div>
+          <div class="status-pill"><i id="dbDot"></i><span id="dbStatus">Local archive ready</span></div>
         </div>
       </header>
 
@@ -37,7 +37,7 @@
         </div>
         <div id="streamInfo" class="stream-info">Start EEGStudio's LSL Outlet, then discover streams.</div>
         <div class="setup-footer">
-          <p class="privacy-note">Raw EEG is recorded locally. Aura stores participant/session metadata and model results; raw EEG is not sent to the database.</p>
+          <p class="privacy-note">EEG samples, participant details, predictions, and report data are saved locally on this computer.</p>
           <div class="setup-actions"><button id="startButton" class="button primary" disabled>Start live session</button><button id="stopButton" class="button stop" disabled>Stop and save session</button><button id="reportButton" class="button secondary" disabled>Download PDF report</button></div>
         </div>
       </section>
@@ -77,9 +77,9 @@
       </div>
 
       <section class="panel archive-panel" id="history">
-        <div class="section-heading"><div><p class="eyebrow">NEO4J AURA</p><h2>Saved participants and session reports</h2></div><button id="refreshSessionsButton" class="button secondary">Refresh sessions</button></div>
-        <p class="section-help">Choose a participant session to load its saved prediction trend and details. Raw EEG stays in the local recording and is not downloaded from Aura.</p>
-        <div id="sessionList" class="archive-list"><div class="empty-state">Connecting to Aura…</div></div>
+        <div class="section-heading"><div><p class="eyebrow">LOCAL ARCHIVE</p><h2>Saved participants and session reports</h2></div><button id="refreshSessionsButton" class="button secondary">Refresh sessions</button></div>
+        <p class="section-help">Choose a locally saved participant session to load its prediction trend and download its report. EEG sample files remain on this computer.</p>
+        <div id="sessionList" class="archive-list"><div class="empty-state">Loading local sessions…</div></div>
       </section>
 
       <footer class="app-footer"><span><i></i> OUTPUTS DESCRIBE EXPERIMENTAL CONDITIONS, NOT CLINICAL STRESS DIAGNOSES</span><span>Signal units and EEGStudio stream processing are unverified.</span></footer>

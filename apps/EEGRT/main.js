@@ -76,7 +76,7 @@ ipcMain.handle('live:start', async (event, details) => {
     '--participant-name', participantName,
     '--output', path.join(appRoot, 'data', 'live', 'combined-app'),
     '--stop-file', stopFile,
-    '--neo4j', '--json-events', '--allow-unmapped'], {
+    '--json-events', '--allow-unmapped'], {
     cwd: appRoot,
     windowsHide: true,
     env: process.env,
@@ -87,14 +87,19 @@ ipcMain.handle('live:start', async (event, details) => {
     if (!event.sender.isDestroyed()) event.sender.send(channel, payload);
   };
   let stdoutBuffer = '';
+  let reportedError = '';
   child.stdout.setEncoding('utf8').on('data', chunk => {
     stdoutBuffer += chunk;
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() || '';
     for (const line of lines) {
       if (!line.trim()) continue;
-      try { sendLiveEvent('live:event', JSON.parse(line)); }
-      catch { sendLiveEvent('live:event', { type: 'log', message: line }); }
+      try {
+        const payload = JSON.parse(line);
+        if (payload.type === 'error' && payload.error) reportedError = payload.error;
+        sendLiveEvent('live:event', payload);
+      }
+      catch { /* Suppress unstructured liblsl/sklearn diagnostics; actionable errors use JSON events. */ }
     }
   });
   let stderr = '';
@@ -102,12 +107,22 @@ ipcMain.handle('live:start', async (event, details) => {
   child.on('error', error => sendLiveEvent('live:event', { type: 'error', error: error.message }));
   child.on('close', async code => {
     if (stdoutBuffer.trim()) {
-      try { sendLiveEvent('live:event', JSON.parse(stdoutBuffer)); }
-      catch { sendLiveEvent('live:event', { type: 'log', message: stdoutBuffer.trim() }); }
+      try {
+        const payload = JSON.parse(stdoutBuffer);
+        if (payload.type === 'error' && payload.error) reportedError = payload.error;
+        sendLiveEvent('live:event', payload);
+      }
+      catch { /* Suppress unstructured diagnostics so they cannot flood the dashboard. */ }
     }
     activeLiveSessions.delete(owner);
     try { await fs.unlink(stopFile); } catch { /* already removed */ }
-    sendLiveEvent('live:exit', { exitCode: code, detail: code === 0 ? '' : stderr.trim() });
+    const conciseStderr = stderr.split(/\r?\n/).map(line => line.trim())
+      .filter(line => /fatal|error|exception|traceback|unable|failed/i.test(line))
+      .slice(-5).join('\n');
+    sendLiveEvent('live:exit', {
+      exitCode: code,
+      detail: code === 0 ? '' : (reportedError || conciseStderr || `Acquisition process exited with code ${code}.`)
+    });
   });
   event.sender.once('destroyed', async () => {
     if (activeLiveSessions.get(owner)?.child === child) {

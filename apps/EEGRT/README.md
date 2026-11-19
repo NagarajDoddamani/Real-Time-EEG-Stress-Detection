@@ -1,67 +1,46 @@
-# EEGRT — standalone real-time EEG application
+# EEGRT desktop application
 
-This folder is the complete application. It does not import Python code,
-models, settings, or UI assets from the repository's old `src/`, `models/`,
-`configs/`, `apps/device1-recorder/`, or `apps/device2-dashboard/` folders.
+EEGRT is a standalone Electron application for LSL stream discovery, local EEG
+recording, model inference, and downloadable session reports. It does not use a
+database. Session metadata and predictions are kept in local JSON/CSV files.
 
 ## Run
 
-From PowerShell:
+From this directory, install the Python dependencies into the supported Python
+environment, then launch Electron:
 
 ```powershell
-cd C:\path\to\Real-Time-EEG-Stress-Detection\apps\EEGRT
-py -3.10 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env   # only if this folder does not already have .env
-notepad .env
-npm install                   # only for initial setup
+python -m pip install -r requirements.txt
 npm start
 ```
 
-The `.env` file contains local Aura credentials and is ignored by Git. The
-Python environment and Electron app are resolved from this folder. Local EEG
-recordings and logs are written under `data/` within this folder.
+Start the EEGStudio LSL Outlet first, then use **Refresh streams**. Select the
+stream explicitly, enter participant details, and start the live session. Stop
+the session to finalize its local archive and enable the PDF report.
 
-## Single-folder contents
+## Local files
 
-- `dev1_discover.ps1`, `dev1_record.ps1`: standalone LSL discovery and raw
-  recording utilities for the acquisition side.
-- `main.js`, `preload.js`, `index.html`, `renderer.js`, `styles.css`: the
-  combined Electron UI and its secure IPC bridge.
-- `eeg_cli.py`, `eeg_pipeline.py`, `eeg_recording.py`, `eeg_features.py`:
-  acquisition, rolling-window validation, inference, local recording, and the
-  exact feature implementation used by the saved model.
-- `eeg_service.py`, `eeg_database.py`: participant/session/result storage and
-  report retrieval through Neo4j Aura. Raw EEG samples are not sent to Aura.
-- `stress_model.pkl`, `model_metadata.json`, `feature_names.json`,
-  `eeg_config.json`: the bundled model and its inference contract.
-- `requirements.txt`, `package.json`, `package-lock.json`: standalone runtime
-  dependencies.
+Sessions are written under `data/live/combined-app/`:
 
-## Live session
+- `recordings/`: original received channel values and LSL timestamps.
+- `metadata/`: stream, participant, validation, model, and summary metadata.
+- `predictions/`: one row per model window.
+- `events/`: optional separately selected event stream.
+- `logs/`: acquisition diagnostics.
 
-1. Start the Mitsar device and EEGStudio, then enable EEGStudio's LSL Outlet.
-2. Start this app with `npm start`.
-3. Discover and select the stream; enter participant ID and full name.
-4. Start the session. Incoming samples are recorded locally; valid windows are
-   passed through the bundled feature/model pipeline and shown in the UI.
-5. Stop the session to save summary and prediction results in Aura. Use the
-   session archive to review results and download a PDF.
+The Session Reports view reads these local files. It does not depend on a
+network connection or database.
 
-The model requires the exact 19 channel labels and 500 Hz. It refuses to infer
-when channel labels or observed rate cannot be validated. Your screenshot's
-23-channel stream had blank labels, so the graph may show generic channel names
-and predictions will remain blocked until EEGStudio exposes a reliable channel
-mapping. Signal units and EEGStudio raw/processed/filter behavior remain
-unverified. Outputs are experimental-condition estimates, not clinical
-diagnoses.
+## Signal and model safeguards
 
-## Device 1 command-line utilities
+The application preserves incoming samples and timestamps without filtering,
+normalization, or resampling. It requires stream channel labels and a compatible
+observed rate before model inference. If labels are absent, generic `Ch 01`-style
+columns are used only to preserve and display the recording; inference remains
+blocked because the model channel mapping cannot be verified. Signal units and
+whether EEGStudio's configured filters affect the LSL signal remain unverified.
+Predictions estimate experimental conditions and are not clinical diagnoses.
 
-```powershell
-.\dev1_discover.ps1
-.\dev1_record.ps1 -StreamIndex 0
-```
-
-The main workflow is the combined Electron UI. `dev1_record.ps1` is a separate
-diagnostic recorder and does not run model inference.
+LSL discovery confirms only that a stream is visible. A physical acquisition
+test is still required to verify received channel metadata, timestamps, values,
+and end-to-end predictions with the Mitsar device.

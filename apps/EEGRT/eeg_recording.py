@@ -24,7 +24,7 @@ class LocalRecording:
         self.sample_writer.writerow(["sample_index", "lsl_timestamp", *labels])
         self.pred_file = self.predictions_path.open("w", encoding="utf-8", newline="")
         self.pred_writer = csv.DictWriter(self.pred_file, fieldnames=["window_index", "window_start_timestamp",
-            "window_end_timestamp", "prediction", "predicted_condition", "baseline_probability",
+            "window_end_timestamp", "elapsed_seconds", "prediction", "predicted_condition", "baseline_probability",
             "stress_probability", "model_algorithm", "model_version"], lineterminator="\n")
         self.pred_writer.writeheader()
         self.event_file = self.events_path.open("w", encoding="utf-8", newline="")
