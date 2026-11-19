@@ -3,6 +3,7 @@
 /data/processed/
 /data/audit/
 /data/live/
+/apps/EEGRT/data/
 
 # Python
 __pycache__/

@@ -1,0 +1,29 @@
+{
+  "eeg_channels": [
+    "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "T3", "C3", "Cz",
+    "C4", "T4", "T5", "P3", "Pz", "P4", "T6", "O1", "O2"
+  ],
+  "sampling_frequency_hz": 500,
+  "sampling_frequency_verified": true,
+  "signal_units": null,
+  "window_duration_seconds": 4.0,
+  "window_overlap_fraction": 0.5,
+  "frequency_bands_hz": {
+    "delta": [0.5, 4.0],
+    "theta": [4.0, 8.0],
+    "alpha": [8.0, 13.0],
+    "beta": [13.0, 30.0],
+    "gamma": [30.0, 80.0]
+  },
+  "label_map": {"baseline": 0, "stress": 1},
+  "frequency_dependent_processing_permitted": true,
+  "psd": {
+    "method": "Welch",
+    "window": "periodic Hann",
+    "segment_duration_seconds": 2.0,
+    "overlap_fraction": 0.5,
+    "detrend": "constant",
+    "scaling": "density",
+    "averaging": "mean"
+  }
+}

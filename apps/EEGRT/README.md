@@ -1,58 +1,67 @@
-# NeuroMonitor — combined EEG desktop application
+# EEGRT — standalone real-time EEG application
 
-This Electron app replaces the earlier two-computer relay workflow. Run it on
-the computer that can see EEGStudio's LSL Outlet. It discovers the outlet,
-collects participant details, receives the stream directly, applies the
-existing trained SVM pipeline, displays the incoming traces and estimates, and
-saves session/results metadata to Neo4j Aura.
+This folder is the complete application. It does not import Python code,
+models, settings, or UI assets from the repository's old `src/`, `models/`,
+`configs/`, `apps/device1-recorder/`, or `apps/device2-dashboard/` folders.
 
-Raw EEG samples are recorded incrementally to local CSV files. The app does
-not send raw signal chunks to Aura. Neo4j stores participant identity, session
-metadata, prediction windows, and final session summary. The Electron app can
-generate a PDF report from a completed session or retrieve saved results for a
-previous session.
+## Run
 
-## Setup
-
-On the EEG acquisition computer:
-
-1. Start the SmartBCI x24 and EEGStudio.
-2. Start EEGStudio's LSL Outlet.
-3. Configure the project Python environment and `.env` with the Aura
-   connection settings. The `.env` file must stay local and untracked.
-4. Install the Python dependencies and Electron dependencies if needed.
+From PowerShell:
 
 ```powershell
-cd C:\path\to\Real-Time-EEG-Stress-Detection
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env   # only if this machine does not already have .env
+cd C:\path\to\Real-Time-EEG-Stress-Detection\apps\EEGRT
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env   # only if this folder does not already have .env
 notepad .env
-cd apps\EEGRT
-npm install                  # only for initial setup
-$env:EEG_PYTHON = (Resolve-Path ..\..\.venv\Scripts\python.exe).Path
+npm install                   # only for initial setup
 npm start
 ```
 
-If using the system Python instead of `.venv`, omit the `EEG_PYTHON` assignment.
-The Python executable used by Electron must have the same installed dependencies
-and must be able to read the project `.env`.
+The `.env` file contains local Aura credentials and is ignored by Git. The
+Python environment and Electron app are resolved from this folder. Local EEG
+recordings and logs are written under `data/` within this folder.
 
-## Session workflow
+## Single-folder contents
 
-1. Refresh streams and explicitly select the EEGStudio EEG outlet.
-2. Enter a participant ID and full name.
-3. Start the live session. The app validates connected channel labels and the
-   stream sampling rate against the trained model before predicting.
-4. Stop the session to flush local recording files and save the Aura summary.
-5. Download the report, or retrieve a saved report from the session archive.
+- `dev1_discover.ps1`, `dev1_record.ps1`: standalone LSL discovery and raw
+  recording utilities for the acquisition side.
+- `main.js`, `preload.js`, `index.html`, `renderer.js`, `styles.css`: the
+  combined Electron UI and its secure IPC bridge.
+- `eeg_cli.py`, `eeg_pipeline.py`, `eeg_recording.py`, `eeg_features.py`:
+  acquisition, rolling-window validation, inference, local recording, and the
+  exact feature implementation used by the saved model.
+- `eeg_service.py`, `eeg_database.py`: participant/session/result storage and
+  report retrieval through Neo4j Aura. Raw EEG samples are not sent to Aura.
+- `stress_model.pkl`, `model_metadata.json`, `feature_names.json`,
+  `eeg_config.json`: the bundled model and its inference contract.
+- `requirements.txt`, `package.json`, `package-lock.json`: standalone runtime
+  dependencies.
 
-The current model requires the exact 19 trained EEG channels and 500 Hz. If
-EEGStudio publishes blank labels or does not expose a verified mapping, the app
-will block inference rather than guess channels. Verify the inlet metadata and
-electrode ordering before relying on predictions. Signal units and EEGStudio
-filtering/raw-vs-processed behavior remain unverified.
+## Live session
 
-The predictions estimate recorded baseline/stress experimental conditions.
-They are preliminary and are not clinical diagnoses. Music control is not
-connected. This is the requested primary app location; `device2-dashboard/` is
-retained as the earlier copy. Make future UI changes in `EEGRT/`.
+1. Start the Mitsar device and EEGStudio, then enable EEGStudio's LSL Outlet.
+2. Start this app with `npm start`.
+3. Discover and select the stream; enter participant ID and full name.
+4. Start the session. Incoming samples are recorded locally; valid windows are
+   passed through the bundled feature/model pipeline and shown in the UI.
+5. Stop the session to save summary and prediction results in Aura. Use the
+   session archive to review results and download a PDF.
+
+The model requires the exact 19 channel labels and 500 Hz. It refuses to infer
+when channel labels or observed rate cannot be validated. Your screenshot's
+23-channel stream had blank labels, so the graph may show generic channel names
+and predictions will remain blocked until EEGStudio exposes a reliable channel
+mapping. Signal units and EEGStudio raw/processed/filter behavior remain
+unverified. Outputs are experimental-condition estimates, not clinical
+diagnoses.
+
+## Device 1 command-line utilities
+
+```powershell
+.\dev1_discover.ps1
+.\dev1_record.ps1 -StreamIndex 0
+```
+
+The main workflow is the combined Electron UI. `dev1_record.ps1` is a separate
+diagnostic recorder and does not run model inference.

@@ -3,17 +3,19 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const projectRoot = path.resolve(__dirname, '..', '..');
+const appRoot = __dirname;
 const activeLiveSessions = new Map();
 
 function pythonExecutable() {
-  return process.env.EEG_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const bundledVenv = path.join(appRoot, '.venv', 'Scripts', 'python.exe');
+  return process.env.EEG_PYTHON || (require('node:fs').existsSync(bundledVenv)
+    ? bundledVenv : (process.platform === 'win32' ? 'python' : 'python3'));
 }
 
-function runService(args) {
+function runPythonScript(scriptName, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonExecutable(), ['-m', 'src.dashboard.device2_service', ...args], {
-      cwd: projectRoot,
+    const child = spawn(pythonExecutable(), [path.join(appRoot, scriptName), ...args], {
+      cwd: appRoot,
       windowsHide: true,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -24,13 +26,21 @@ function runService(args) {
     child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', code => {
+      const outputLines = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
       let payload;
-      try { payload = JSON.parse(stdout.trim()); }
-      catch { return reject(new Error(stderr.trim() || stdout.trim() || `Python exited ${code}`)); }
+      for (let index = outputLines.length - 1; index >= 0; index -= 1) {
+        try { payload = JSON.parse(outputLines[index]); break; }
+        catch { /* Ignore non-JSON diagnostic lines, such as liblsl startup logs. */ }
+      }
+      if (!payload) return reject(new Error(stderr.trim() || stdout.trim() || `Python exited ${code}`));
       if (code !== 0 || !payload.ok) return reject(new Error(payload.error || stderr.trim() || `Python exited ${code}`));
       resolve(payload);
     });
   });
+}
+
+function runService(args) {
+  return runPythonScript('eeg_service.py', args);
 }
 
 ipcMain.handle('sessions:list', async (_event, limit) => {
@@ -38,7 +48,7 @@ ipcMain.handle('sessions:list', async (_event, limit) => {
   return runService(['sessions', '--limit', String(safeLimit)]);
 });
 
-ipcMain.handle('lsl:discover', async () => runService(['discover', '--json']));
+ipcMain.handle('lsl:discover', async () => runPythonScript('eeg_cli.py', ['discover', '--json']));
 
 ipcMain.handle('session:report', async (_event, sessionId) => {
   if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9-]{8,80}$/.test(sessionId)) {
@@ -56,18 +66,18 @@ ipcMain.handle('live:start', async (event, details) => {
   if (!streamUid || streamUid.length > 512) throw new Error('Select an available EEGStudio LSL stream.');
   const owner = event.sender.id;
   if (activeLiveSessions.has(owner)) throw new Error('A live EEG session is already active.');
-  const controlDir = path.join(projectRoot, 'data', 'live', 'control');
+  const controlDir = path.join(appRoot, 'data', 'live', 'control');
   await fs.mkdir(controlDir, { recursive: true });
   const stopFile = path.join(controlDir, `stop_${Date.now()}_${Math.random().toString(16).slice(2)}.flag`);
   try { await fs.unlink(stopFile); } catch { /* unique filename */ }
-  const child = spawn(pythonExecutable(), ['-m', 'src.acquisition.cli', 'live',
+  const child = spawn(pythonExecutable(), [path.join(appRoot, 'eeg_cli.py'), 'live',
     '--stream-uid', streamUid,
     '--participant-id', participantId,
     '--participant-name', participantName,
-    '--output', path.join(projectRoot, 'data', 'live', 'combined-app'),
+    '--output', path.join(appRoot, 'data', 'live', 'combined-app'),
     '--stop-file', stopFile,
     '--neo4j', '--json-events', '--allow-unmapped'], {
-    cwd: projectRoot,
+    cwd: appRoot,
     windowsHide: true,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -177,7 +187,7 @@ function createWindow() {
       sandbox: true
     }
   });
-  window.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  window.loadFile(path.join(__dirname, 'index.html'));
 }
 
 app.whenReady().then(() => {
